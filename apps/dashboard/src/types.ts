@@ -19,25 +19,34 @@ export interface SessionState {
   last_event_at: number | null
 }
 
+export type ReviewStatus =
+  | 'none' | 'ready' | 'testing' | 'passed' | 'has-issues'
+  | 'fix-scheduled' | 'follow-up' | 'revert-scheduled'
+  | 'ready-for-merge' | 'merged' | 'cancelled' | 'retry-later'
+
 export interface PlanqTask {
   id: number
   container_id: string
-  task_type: 'task' | 'plan' | 'make-plan' | 'manual-test' | 'manual-commit' | 'manual-task' | 'unnamed-task' | 'auto-test' | 'auto-commit'
+  task_type: 'task' | 'plan' | 'make-plan' | 'investigate' | 'manual-test' | 'manual-commit' | 'manual-task' | 'unnamed-task' | 'auto-test' | 'auto-commit'
   filename: string | null
   description: string | null
   position: number
-  status: 'pending' | 'done' | 'underway' | 'auto-queue' | 'awaiting-commit' | 'awaiting-plan'
+  status: 'pending' | 'done' | 'underway' | 'auto-queue' | 'awaiting-commit' | 'awaiting-plan' | 'deferred'
   auto_commit: boolean
   commit_mode: 'none' | 'auto' | 'stage' | 'manual'
   plan_disposition: 'manual' | 'add-after' | 'add-end'
   auto_queue_plan: boolean
+  review_status: ReviewStatus
+  parent_task_id: number | null
+  link_type: 'follow-up' | 'fix-required' | 'check' | 'other' | null
+  session_ids: string[]
 }
 
 export interface PlanqItem {
   task_type: string
   filename: string | null
   description: string | null
-  status: 'pending' | 'done' | 'underway' | 'auto-queue' | 'awaiting-commit' | 'awaiting-plan'
+  status: 'pending' | 'done' | 'underway' | 'auto-queue' | 'awaiting-commit' | 'awaiting-plan' | 'deferred'
   auto_commit: boolean
   commit_mode: 'none' | 'auto' | 'stage' | 'manual'
 }
@@ -83,6 +92,7 @@ export interface GitCommit {
   subject: string
   author?: string
   author_date?: number
+  session_ids?: string[]
 }
 
 export interface GitContainer {

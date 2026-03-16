@@ -252,7 +252,9 @@
       :tasks="container.planq_tasks ?? []"
       :connected="container.connected"
       :auto-test-pending="container.auto_test_pending ?? null"
+      :initial-review-filter="initialReviewFilter"
       @tasks-changed="emit('tasks-changed')"
+      @open-history="sid => emit('open-history', container.id, sid)"
     />
   </div>
 </template>
@@ -269,6 +271,7 @@ import type { ContainerWithState, GitSubmoduleInfo, SessionState } from '../type
 
 const props = defineProps<{
   container: ContainerWithState
+  initialReviewFilter?: string
 }>()
 
 const emit = defineEmits<{

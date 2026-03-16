@@ -1,7 +1,9 @@
 import { db } from './db';
+import { mkdirSync, unlinkSync } from 'node:fs';
 import {
   initContainerDatabase,
   upsertContainer,
+  touchContainerSeen,
   setContainerDisconnected,
   getAllContainers,
   deleteContainer,
@@ -29,12 +31,69 @@ import {
   getGitCommitRefs,
   upsertHostSourceReport,
   getAllHostSourceReports,
+  insertPendingDashboardChange,
+  getPendingDashboardChanges,
+  markPendingChangesSent,
+  ackPendingDashboardChanges,
+  cleanupOldPendingChanges,
+  reapplyPendingChangesToProjection,
+  upsertSessionLog,
+  getSessionLog,
+  touchSessionLogAccessed,
+  getSessionLogsByContainer,
+  listSessionLogsOlderThan,
+  deleteSessionLogs,
+  addTaskSessionLink,
+  addCommitSessionLink,
+  getSessionsForTask,
+  getTasksForSession,
+  getCommitsForSession,
+  type ChangeRequest,
   type ContainerRow,
   type PlanqTaskRow,
   type PlanqItem,
   type StoredGitCommit,
   type HostSourceReport,
 } from './container-db';
+
+// ── Heartbeat change detection ────────────────────────────────────────────────
+// Returns true if the incoming heartbeat data differs from the stored row in any
+// way that warrants a DB write and dashboard broadcast.
+function containerDataChanged(
+  existing: ContainerRow,
+  msg: { machine_hostname?: string; container_hostname?: string; workspace_host_path?: string;
+         git_branch?: string; git_commit_hash?: string; git_staged_count?: number;
+         git_unstaged_count?: number; git_staged_diffstat?: string; git_unstaged_diffstat?: string;
+         versions?: Record<string, string>; planq_order?: string; review_state?: unknown;
+         test_results?: unknown; auto_test_pending?: unknown; running_session_ids?: string[] },
+  resolvedMachineHostname: string,
+  mergedSessionIds: string[],
+): boolean {
+  if (!existing.connected) return true; // was offline — must reconnect
+  // Sort session arrays for stable comparison
+  const sortedMerged = [...mergedSessionIds].sort().join(',');
+  const sortedExisting = [...existing.active_session_ids].sort().join(',');
+  const sortedRunning = [...(Array.isArray(msg.running_session_ids) ? msg.running_session_ids : [])].sort().join(',');
+  const sortedExistingRunning = [...(existing.running_session_ids ?? [])].sort().join(',');
+  return (
+    existing.machine_hostname       !== resolvedMachineHostname ||
+    existing.container_hostname     !== (msg.container_hostname ?? '') ||
+    existing.workspace_host_path    !== (msg.workspace_host_path ?? null) ||
+    existing.git_branch             !== (msg.git_branch ?? null) ||
+    existing.git_commit_hash        !== (msg.git_commit_hash ?? null) ||
+    existing.git_staged_count       !== (msg.git_staged_count ?? 0) ||
+    existing.git_unstaged_count     !== (msg.git_unstaged_count ?? 0) ||
+    existing.git_staged_diffstat    !== (msg.git_staged_diffstat ?? null) ||
+    existing.git_unstaged_diffstat  !== (msg.git_unstaged_diffstat ?? null) ||
+    sortedExisting                  !== sortedMerged ||
+    sortedExistingRunning           !== sortedRunning ||
+    JSON.stringify(existing.versions ?? {}) !== JSON.stringify(msg.versions ?? {}) ||
+    existing.planq_order            !== (msg.planq_order ?? null) ||
+    existing.review_state           !== (msg.review_state != null ? JSON.stringify(msg.review_state) : null) ||
+    existing.test_results           !== (Array.isArray(msg.test_results) ? JSON.stringify(msg.test_results) : null) ||
+    existing.auto_test_pending      !== (msg.auto_test_pending ? JSON.stringify(msg.auto_test_pending) : null)
+  );
+}
 
 // ── Git show cache (LRU-style, max 200 entries) ───────────────────────────────
 const gitShowCache = new Map<string, { diffstat: string; message: string }>();
@@ -54,6 +113,208 @@ const githubPrCache = new Map<string, { fetchedAt: number; data: GithubPrData }>
 // containerId → epoch ms
 const planqSyncedAt = new Map<string, number>();
 
+// ── ChangeRequest helpers ─────────────────────────────────────────────────────
+
+let _crSeq = 0;
+function crId(): string {
+  return `cr_${Date.now()}_${(++_crSeq).toString(36)}`;
+}
+
+/** Send apply_changes to the container and record in pending_dashboard_changes. */
+function sendApplyChanges(containerId: string, changes: ChangeRequest[]): void {
+  if (!changes.length) return;
+  for (const c of changes) insertPendingDashboardChange(containerId, c);
+  const ws = containerWsMap.get(containerId);
+  if (!ws) return; // changes stored; will drain on reconnect
+  try {
+    ws.send(JSON.stringify({ type: 'apply_changes', changes }));
+    markPendingChangesSent(changes.map(c => c.id));
+  } catch {
+    // send failed; changes remain as 'pending' and will be retried on reconnect
+  }
+}
+
+// ── Session log filesystem cache ──────────────────────────────────────────────
+// Stored under data/session-logs/ next to the server's working directory.
+// Configurable via OBSERVABILITY_DATA_DIR env var.
+
+const SESSION_LOG_DIR = (() => {
+  const base = process.env.OBSERVABILITY_DATA_DIR ?? 'data';
+  return `${base}/session-logs`;
+})();
+
+const SESSION_LOG_TTL_DAYS = parseInt(process.env.OBSERVABILITY_SESSION_LOG_TTL_DAYS ?? '30', 10);
+
+// Ensure the session-logs directory exists on startup (best-effort)
+try { mkdirSync(SESSION_LOG_DIR, { recursive: true }); } catch {}
+
+/** Path to the on-disk JSONL file for a session. */
+function sessionLogPath(sessionId: string): string {
+  return `${SESSION_LOG_DIR}/${sessionId}.jsonl`;
+}
+
+/** Write (or append) session log content to the filesystem and update DB index. */
+async function writeSessionLogFile(
+  sessionId: string,
+  containerId: string,
+  sourceRepo: string,
+  lineOffset: number,
+  lineCount: number,
+  content: string,
+  isComplete: boolean,
+): Promise<void> {
+  const path = sessionLogPath(sessionId);
+  if (lineOffset === 0) {
+    // First chunk — full overwrite
+    await Bun.write(path, content);
+  } else {
+    // Incremental append
+    const existing = Bun.file(path);
+    const existingContent = (await existing.exists()) ? await existing.text() : '';
+    await Bun.write(path, existingContent + content);
+  }
+  const fileSize = (await Bun.file(path).stat()).size;
+  // total_lines stores lines-received-so-far, used for alignment checks and acks.
+  upsertSessionLog({
+    session_id: sessionId,
+    container_id: containerId,
+    source_repo: sourceRepo,
+    total_lines: lineOffset + lineCount,
+    file_size: fileSize,
+    is_complete: isComplete,
+    last_pushed: Date.now(),
+  });
+}
+
+/**
+ * Scan JSONL session log content for references to planq task filenames or descriptions.
+ * Returns task IDs that are mentioned in the content.
+ */
+function findTaskRefsInSessionContent(content: string, containerId: string): number[] {
+  const tasks = getPlanqTasks(containerId);
+  if (tasks.length === 0) return [];
+
+  // Extract all text from JSONL lines (user messages, assistant text, tool inputs)
+  const textParts: string[] = [];
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    try {
+      const obj = JSON.parse(line);
+      const msg = obj.message;
+      if (!msg) continue;
+      const extractContent = (c: any) => {
+        if (typeof c === 'string') { textParts.push(c); return; }
+        if (!Array.isArray(c)) return;
+        for (const part of c) {
+          if (part.type === 'text' && part.text) textParts.push(part.text);
+          else if (part.type === 'tool_use' && part.input) {
+            // tool input values (e.g. Bash command, file path)
+            for (const v of Object.values(part.input as Record<string, any>)) {
+              if (typeof v === 'string') textParts.push(v);
+            }
+          }
+        }
+      };
+      extractContent(msg.content);
+    } catch {}
+  }
+
+  if (textParts.length === 0) return [];
+  const combined = textParts.join('\n');
+
+  // Match tasks whose filename or description appears in the combined text
+  const matched: number[] = [];
+  for (const task of tasks) {
+    const needle = task.filename ?? task.description;
+    if (needle && combined.includes(needle)) matched.push(task.id);
+  }
+  return matched;
+}
+
+/** Handle session_log_push from daemon. */
+async function handleSessionLogPush(ws: any, msg: any): Promise<void> {
+  const containerId: string = ws.__containerId;
+  if (!containerId) return;
+  const container = getContainer(containerId);
+  if (!container) return;
+
+  const sessionId: string = msg.session_id ?? '';
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return;
+
+  const lineOffset: number = Math.max(0, parseInt(msg.line_offset ?? '0', 10) || 0);
+  const content: string = msg.content ?? '';
+  const isComplete: boolean = Boolean(msg.is_complete);
+
+  // line_count from daemon; fall back to counting newlines in content.
+  const lineCount: number = msg.line_count != null
+    ? Math.max(0, parseInt(msg.line_count, 10) || 0)
+    : content.split('\n').filter(Boolean).length;
+
+  // Verify alignment for every chunk (including the first incremental one).
+  // total_lines in the DB records lines-received-so-far, so it must equal lineOffset.
+  if (lineOffset > 0) {
+    const existing = getSessionLog(sessionId);
+    if (!existing || existing.total_lines !== lineOffset) {
+      const fromLine = existing?.total_lines ?? 0;
+      console.warn(`[session_log_push] ${sessionId}: alignment mismatch — expected offset ${fromLine}, got ${lineOffset}; requesting resend`);
+      try { ws.send(JSON.stringify({ type: 'session_log_resend', session_id: sessionId, from_line: fromLine })); } catch {}
+      return;
+    }
+  }
+
+  try {
+    console.log(`[session_log_push] ${sessionId.slice(0, 8)}: received lines ${lineOffset}–${lineOffset + lineCount - 1}${isComplete ? ' (complete)' : ''}`);
+    await writeSessionLogFile(sessionId, containerId, container.source_repo, lineOffset, lineCount, content, isComplete);
+  } catch (e) {
+    console.error(`[session_log_push] Error writing ${sessionId}:`, e);
+  }
+
+  // Link any tasks mentioned in this content chunk to the session
+  if (content) {
+    const linkNow = Math.floor(Date.now() / 1000);
+    for (const taskId of findTaskRefsInSessionContent(content, containerId)) {
+      addTaskSessionLink(taskId, sessionId, linkNow);
+    }
+  }
+}
+
+/** Eviction sweep: delete logs not accessed within TTL. Called on startup + hourly. */
+async function evictOldSessionLogs(): Promise<void> {
+  const cutoff = Date.now() - SESSION_LOG_TTL_DAYS * 24 * 3600 * 1000;
+  const stale = listSessionLogsOlderThan(cutoff);
+  if (!stale.length) return;
+  for (const sessionId of stale) {
+    try { unlinkSync(sessionLogPath(sessionId)); } catch {}
+  }
+  deleteSessionLogs(stale);
+  console.log(`[session-log-eviction] Deleted ${stale.length} stale session log(s)`);
+}
+
+// evictOldSessionLogs() and its interval are started from initContainerRoutes()
+// so that db is guaranteed to be initialized before the first call.
+
+// ── Plans files cache (populated from daemon heartbeats) ───────────────────────
+// containerId → filename → content (most recent content pushed by daemon)
+const plansFilesCache = new Map<string, Map<string, string>>();
+// containerIds whose plans/ directory has been fully initialised (first push received)
+const plansFilesCacheReady = new Set<string>();
+
+// ── Session log cache ─────────────────────────────────────────────────────────
+// Accumulates JSONL text per session as chunks are fetched.
+// cachedLines holds all lines from 0..cachedLines-1 as a single raw string.
+// Evicted after SESSION_LOG_CACHE_TTL_MS of inactivity, or when the session
+// goes active again (UserPromptSubmit) which may add new lines.
+const SESSION_LOG_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+interface SessionLogCache { rawText: string; cachedLines: number; totalLines: number; ts: number }
+const sessionLogCache = new Map<string, SessionLogCache>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of sessionLogCache) {
+    if (now - v.ts >= SESSION_LOG_CACHE_TTL_MS) sessionLogCache.delete(k);
+  }
+}, 5 * 60 * 1000).unref?.();
+
 // ── WebSocket connection stores ───────────────────────────────────────────────
 
 // container_id → WebSocket (planq daemon connection)
@@ -69,8 +330,18 @@ const pendingFileRequests = new Map<string, {
   timer: ReturnType<typeof setTimeout>;
 }>();
 
+// Pending session log chunk requests (resolve with full message for chunk metadata)
+const pendingSessionLogRequests = new Map<string, {
+  resolve: (msg: any) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+
 // Offline grace-period timers: container_id → timer
 const offlineTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+// Track last time we sent a daemon restart so we don't spam it on every heartbeat.
+const daemonRestartSentAt = new Map<string, number>();
 
 // Pending git fresh-fetch operations: repo → { pendingContainerIds, dashboardClients, timer }
 const pendingGitRefresh = new Map<string, {
@@ -110,6 +381,11 @@ export function initContainerRoutes(): void {
   const cutoff = Date.now() - 60_000;
   const result = db.prepare('UPDATE containers SET connected = 0 WHERE last_seen < ?').run(cutoff);
   console.log(`[init] marked ${result.changes} stale container(s) offline (last_seen > 60s ago)`);
+  // Periodically clean up old acked change records (daily)
+  setInterval(() => cleanupOldPendingChanges(), 24 * 3600 * 1000);
+  // Session log eviction: run on startup and every hour (must be after db init)
+  evictOldSessionLogs();
+  setInterval(evictOldSessionLogs, 60 * 60 * 1000);
 }
 
 // ── Dashboard broadcast helpers ───────────────────────────────────────────────
@@ -148,7 +424,7 @@ function ensureContainerFromEvent(sourceApp: string, sessionId: string, dc?: Dev
     const machineMatches = machineHostname !== 'unknown' && row.machine_hostname === machineHostname;
 
     if (containerMatches || machineMatches || !hasExplicitHost) {
-      console.log(`[ensureContainer] ${evCtx}: correctly claimed by id=${row.id} host=${row.machine_hostname} container=${row.container_hostname}`);
+      // correctly claimed — no log needed
       return;
     }
 
@@ -258,6 +534,10 @@ export function broadcastAgentUpdate(data: {
   if (data.hook_event_type === 'UserPromptSubmit') {
     status = 'busy';
     last_prompt = (data.payload?.prompt as string) ?? null;
+    // New prompt submitted: mark session log cache as no longer complete so the
+    // next incremental fetch will relay to the daemon for the new lines.
+    const slc = sessionLogCache.get(data.session_id);
+    if (slc) slc.totalLines = 0; // force re-check on next request
   } else if (data.hook_event_type === 'Stop') {
     status = 'idle';
     last_response_summary = data.summary ?? null;
@@ -367,6 +647,29 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
       const addr = (ws.data as any)?.addr ?? 'unknown';
       ws.__wsLabel = `container@${addr} ${hbCtx}`;
       console.log(`[ws-identified] ${ws.__wsLabel}`);
+      // Clear the plans-files cache on reconnect so the daemon's fresh full
+      // push (triggered by clearing _plans_file_mtimes in on_open) populates
+      // the cache from scratch rather than being marked ready prematurely.
+      plansFilesCache.delete(containerId);
+      plansFilesCacheReady.delete(containerId);
+      // Drain any pending dashboard changes (both unsent and previously sent but unacked)
+      const pendingChanges = [
+        ...getPendingDashboardChanges(containerId, 'pending'),
+        ...getPendingDashboardChanges(containerId, 'sent'),
+      ];
+      if (pendingChanges.length > 0) {
+        try {
+          ws.send(JSON.stringify({ type: 'apply_changes', changes: pendingChanges }));
+          markPendingChangesSent(pendingChanges.map(c => c.id));
+          console.log(`[ws-identified] ${ws.__wsLabel}: drained ${pendingChanges.length} pending change(s)`);
+        } catch {}
+      }
+      // Always send session_log_ack so daemon knows what we have and pushes the rest.
+      // An empty map tells the daemon "I have nothing — push all active sessions."
+      const cachedSessions = getSessionLogsByContainer(containerId);
+      const ackMap: Record<string, number> = {};
+      for (const s of cachedSessions) ackMap[s.session_id] = s.total_lines;
+      try { ws.send(JSON.stringify({ type: 'session_log_ack', sessions: ackMap })); } catch {}
     }
 
     const existingContainer = getContainer(containerId);
@@ -430,76 +733,63 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
       console.log(`[heartbeat] ${hbCtx}: machine_hostname in message (${JSON.stringify(msg.machine_hostname)}) rejected — keeping ${JSON.stringify(resolvedMachineHostname)}`);
     }
 
-    // Upsert container row
-    const container = upsertContainer({
-      id: containerId,
-      source_repo: msg.source_repo ?? containerId,
-      machine_hostname: resolvedMachineHostname,
-      container_hostname: msg.container_hostname ?? '',
-      workspace_host_path: msg.workspace_host_path ?? null,
-      git_branch: msg.git_branch ?? null,
-      git_worktree: msg.git_worktree ?? null,
-      git_commit_hash: msg.git_commit_hash ?? null,
-      git_commit_message: msg.git_commit_message ?? null,
-      git_staged_count: msg.git_staged_count ?? 0,
-      git_staged_diffstat: msg.git_staged_diffstat ?? null,
-      git_unstaged_count: msg.git_unstaged_count ?? 0,
-      git_unstaged_diffstat: msg.git_unstaged_diffstat ?? null,
-      git_remote_url: msg.git_remote_url ?? null,
-      git_submodules: Array.isArray(msg.git_submodules) ? msg.git_submodules : [],
-      versions: (msg.versions && typeof msg.versions === 'object') ? msg.versions : {},
-      planq_order: msg.planq_order ?? null,
-      planq_history: msg.planq_history ?? null,
-      auto_test_pending: msg.auto_test_pending ?? null,
-      active_session_ids: mergedSessionIds,
-      running_session_ids: Array.isArray(msg.running_session_ids) ? msg.running_session_ids : [],
-      review_state: msg.review_state != null ? JSON.stringify(msg.review_state) : null,
-      test_results: Array.isArray(msg.test_results) ? JSON.stringify(msg.test_results) : null,
-      last_seen: Date.now(),
-    });
+    // Upsert container row only when data has actually changed; otherwise just touch last_seen.
+    const now = Date.now();
+    const changed = !existingContainer || containerDataChanged(existingContainer, msg, resolvedMachineHostname, mergedSessionIds);
+    let container: ContainerRow;
+    if (changed) {
+      container = upsertContainer({
+        id: containerId,
+        source_repo: msg.source_repo ?? containerId,
+        machine_hostname: resolvedMachineHostname,
+        container_hostname: msg.container_hostname ?? '',
+        workspace_host_path: msg.workspace_host_path ?? null,
+        git_branch: msg.git_branch ?? null,
+        git_worktree: msg.git_worktree ?? null,
+        git_commit_hash: msg.git_commit_hash ?? null,
+        git_commit_message: msg.git_commit_message ?? null,
+        git_staged_count: msg.git_staged_count ?? 0,
+        git_staged_diffstat: msg.git_staged_diffstat ?? null,
+        git_unstaged_count: msg.git_unstaged_count ?? 0,
+        git_unstaged_diffstat: msg.git_unstaged_diffstat ?? null,
+        git_remote_url: msg.git_remote_url ?? null,
+        git_submodules: Array.isArray(msg.git_submodules) ? msg.git_submodules : [],
+        versions: (msg.versions && typeof msg.versions === 'object') ? msg.versions : {},
+        planq_order: msg.planq_order ?? null,
+        planq_history: msg.planq_history ?? null,
+        auto_test_pending: msg.auto_test_pending ?? null,
+        active_session_ids: mergedSessionIds,
+        running_session_ids: Array.isArray(msg.running_session_ids) ? msg.running_session_ids : [],
+        review_state: msg.review_state != null ? JSON.stringify(msg.review_state) : null,
+        test_results: Array.isArray(msg.test_results) ? JSON.stringify(msg.test_results) : null,
+        last_seen: now,
+      });
+      console.log(`[heartbeat] ${hbCtx}: updated sessions=[${mergedSessionIds.map(s => s.slice(0,8)).join(', ')}] git: staged=${msg.git_staged_count ?? 'n/a'} unstaged=${msg.git_unstaged_count ?? 'n/a'} branch=${msg.git_branch ?? '-'}`);
+    } else {
+      touchContainerSeen(containerId, now);
+      container = existingContainer;
+    }
 
-    console.log(`[heartbeat] ${hbCtx}: upserted connected=${container.connected} sessions=[${mergedSessionIds.map(s => s.slice(0,8)).join(', ')}] git: staged=${msg.git_staged_count ?? 'n/a'} unstaged=${msg.git_unstaged_count ?? 'n/a'} branch=${msg.git_branch ?? '-'}`);
-
-    // Sync planq tasks using three-way merge.
-    // base = planq_last_synced (last state both sides agreed on)
-    // server = current DB task list
-    // container = daemon's reported planq_order
+    // Sync planq tasks from container — container is the authoritative source.
+    // No writeback: dashboard changes are delivered via apply_changes messages.
     if (msg.planq_order) {
-      const rawBase = getPlanqLastSynced(containerId);
-      const baseItems: PlanqItem[] = rawBase ? parsePlanqOrder(rawBase) : [];
-      const serverItems: PlanqItem[] = getPlanqTasks(containerId).map(t => ({
-        task_type: t.task_type,
-        filename: t.filename,
-        description: t.description,
-        status: t.status as PlanqItem['status'],
-        auto_commit: t.auto_commit,
-        commit_mode: t.commit_mode,
-        plan_disposition: t.plan_disposition,
-        auto_queue_plan: t.auto_queue_plan,
-      }));
       const containerItems: PlanqItem[] = parsePlanqOrder(msg.planq_order);
+      syncPlanqTasksFromParsed(containerId, containerItems);
+      // Re-apply unacked dashboard changes so they survive the heartbeat wipe.
+      reapplyPendingChangesToProjection(containerId);
+      setPlanqLastSynced(containerId, msg.planq_order);
 
-      const { merged, conflicts, hasChanges } = mergePlanqLists(baseItems, serverItems, containerItems);
-
-      if (conflicts.length > 0) {
-        console.log(`[heartbeat] ${hbCtx}: ${conflicts.length} planq conflict(s) detected`);
-      }
-
-      // Update server DB to reflect merged state
-      syncPlanqTasksFromParsed(containerId, merged);
-
-      // If merged differs from container, push the merged state to the container
-      if (hasChanges) {
-        const mergedSerialized = serializePlanqOrder(getPlanqTasks(containerId));
-        setPlanqLastSynced(containerId, mergedSerialized);
-        console.log(`[heartbeat] ${hbCtx}: pushing merged planq state to daemon (${merged.length} tasks, ${conflicts.length} conflicts)`);
-        writePlanqFile(containerId, container).then(() => {
-          planqSyncedAt.set(containerId, Date.now());
-        }).catch(() => {});
-      } else {
-        // Container state matches merged — record this as the new base
-        const currentSerialized = serializePlanqOrder(getPlanqTasks(containerId));
-        setPlanqLastSynced(containerId, currentSerialized);
+      // Record which sessions were running while each underway task was active.
+      const runningSessions: string[] = Array.isArray(msg.running_session_ids) ? msg.running_session_ids : [];
+      if (runningSessions.length > 0) {
+        const linkNow = Math.floor(Date.now() / 1000);
+        for (const t of getPlanqTasks(containerId)) {
+          if (t.status === 'underway') {
+            for (const sid of runningSessions) {
+              addTaskSessionLink(t.id, sid, linkNow);
+            }
+          }
+        }
       }
     }
 
@@ -543,12 +833,13 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
         }
       }
     } else if (mergedSessionIds.length === 0) {
-      console.log(`[heartbeat] ${hbCtx}: daemon reported 0 sessions, skipping unknown-stub cleanup`);
+      // 0 sessions — skip unknown-stub cleanup
     }
 
     // Upsert incremental git commits sent by daemon
     if (Array.isArray(msg.git_commits) && msg.git_commits.length > 0) {
-      upsertGitCommits(sourceRepo, msg.git_commits);
+      const runningSidsForCommits: string[] = Array.isArray(msg.running_session_ids) ? msg.running_session_ids : [];
+      upsertGitCommits(sourceRepo, msg.git_commits, runningSidsForCommits);
       upsertGitCommitRefs(sourceRepo, container.machine_hostname, msg.git_commits);
       // Record that this host has new commits (for auto-fetch polling)
       if (!branchLastCommit.has(sourceRepo)) branchLastCommit.set(sourceRepo, new Map());
@@ -572,9 +863,50 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
     const tips = getGitTips(sourceRepo);
     try { ws.send(JSON.stringify({ type: 'git_known_hashes', hashes: tips })); } catch {}
 
-    // Broadcast to dashboard clients
-    const containerWithState = buildContainerWithState(container);
-    broadcastDashboard({ type: 'container_update', data: containerWithState });
+    // Merge plans files pushed proactively by the daemon
+    if (msg.plans_files && typeof msg.plans_files === 'object') {
+      if (!plansFilesCache.has(containerId)) plansFilesCache.set(containerId, new Map());
+      const cache = plansFilesCache.get(containerId)!;
+      for (const [filename, content] of Object.entries(msg.plans_files as Record<string, string>)) {
+        cache.set(filename, content);
+        // Sync review_status from task file content
+        const task = getPlanqTasks(containerId).find(t => t.filename === filename);
+        if (task) {
+          const m = (content as string).match(/^review:\s*(\S+)/m);
+          const newStatus = m ? m[1] : 'none';
+          if (newStatus !== task.review_status) updatePlanqTask(task.id, { review_status: newStatus });
+        }
+      }
+      if (Array.isArray(msg.plans_files_deleted)) {
+        for (const filename of msg.plans_files_deleted as string[]) cache.delete(filename);
+      }
+      plansFilesCacheReady.add(containerId);
+    }
+
+    // Broadcast to dashboard clients only when something changed
+    if (changed) {
+      const containerWithState = buildContainerWithState(container);
+      broadcastDashboard({ type: 'container_update', data: containerWithState });
+    }
+
+    // Auto-restart daemon if it is running an outdated version of itself.
+    // Only send once per 5 minutes to avoid restart loops.
+    const versions = container.versions as Record<string, string | null> | null | undefined;
+    if (versions) {
+      const fileStamp = versions.planq_daemon;
+      const runningHash = versions.planq_daemon_running;
+      if (fileStamp && fileStamp !== '(no stamp)' && runningHash) {
+        const fileHash = fileStamp.split(' ')[0];
+        if (fileHash && runningHash !== fileHash) {
+          const lastSent = daemonRestartSentAt.get(containerId) ?? 0;
+          if (Date.now() - lastSent > 5 * 60 * 1000) {
+            daemonRestartSentAt.set(containerId, Date.now());
+            console.log(`[heartbeat] ${hbCtx}: daemon hash mismatch (running=${runningHash} file=${fileHash}) — sending restart`);
+            try { ws.send(JSON.stringify({ type: 'restart' })); } catch {}
+          }
+        }
+      }
+    }
 
     // Resolve any pending git fresh-fetch waiting on this container
     for (const [repo, pending] of pendingGitRefresh.entries()) {
@@ -593,6 +925,21 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
 
   // File read response
   if (msg.type === 'file_read_response') {
+    // Check session log chunk requests first (they need the full message)
+    const slPending = pendingSessionLogRequests.get(msg.request_id);
+    if (slPending) {
+      clearTimeout(slPending.timer);
+      pendingSessionLogRequests.delete(msg.request_id);
+      if (msg.ok === false) {
+        console.log(`[session_log_read] relay response error for req=${msg.request_id}: ${msg.error}`);
+        slPending.reject(new Error(msg.error || 'Session log read failed'));
+      } else {
+        const lineCount = (msg.content ?? '').split('\n').filter(Boolean).length;
+        console.log(`[session_log_read] relay response for req=${msg.request_id}: ${lineCount} lines`);
+        slPending.resolve(msg);
+      }
+      return;
+    }
     const pending = pendingFileRequests.get(msg.request_id);
     if (pending) {
       clearTimeout(pending.timer);
@@ -650,6 +997,23 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
         pending.reject(new Error(msg.error ?? 'File write failed'));
       }
     }
+    return;
+  }
+
+  // Daemon acknowledges applied dashboard changes
+  if (msg.type === 'change_ack') {
+    const ids: string[] = Array.isArray(msg.ids) ? msg.ids : [];
+    if (ids.length > 0) {
+      ackPendingDashboardChanges(ids);
+      const cid = ws.__containerId;
+      if (cid) console.log(`[change_ack] ${cid}: acked ${ids.length} change(s)`);
+    }
+    return;
+  }
+
+  // Daemon pushes session JSONL content to server filesystem cache
+  if (msg.type === 'session_log_push') {
+    handleSessionLogPush(ws, msg).catch(e => console.error('[session_log_push] unexpected error:', e));
     return;
   }
 }
@@ -761,19 +1125,97 @@ export function handleDashboardMessage(ws: any, raw: string | Buffer): void {
 
 // ── File relay helpers ────────────────────────────────────────────────────────
 
-async function relaySessionLogRead(containerId: string, sessionId: string): Promise<string> {
+const SESSION_LOG_DEFAULT_LIMIT = 1000;
+const SESSION_LOG_MAX_LIMIT = 5000;
+
+interface SessionLogChunk {
+  content: string;
+  lineOffset: number;
+  lineCount: number;
+  totalLines: number;
+}
+
+async function relaySessionLogChunk(
+  containerId: string,
+  sessionId: string,
+  lineOffset: number,
+  limit: number,
+): Promise<SessionLogChunk> {
+  const clampedLimit = Math.min(limit, SESSION_LOG_MAX_LIMIT);
+
+  // 1. Try filesystem cache (persistent, survives container disconnect)
+  const dbRow = getSessionLog(sessionId);
+  if (dbRow) {
+    const filePath = sessionLogPath(sessionId);
+    const file = Bun.file(filePath);
+    if (await file.exists()) {
+      touchSessionLogAccessed(sessionId);
+      const allContent = await file.text();
+      const lines = allContent.split('\n');
+      // Remove trailing empty element from final newline
+      if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+      const totalLines = dbRow.total_lines || lines.length;
+
+      if (lineOffset >= totalLines) {
+        return { content: '', lineOffset, lineCount: 0, totalLines };
+      }
+      const chunk = lines.slice(lineOffset, lineOffset + clampedLimit);
+      return { content: chunk.join('\n') + (chunk.length ? '\n' : ''), lineOffset, lineCount: chunk.length, totalLines };
+    }
+  }
+
+  // 2. Try in-memory cache
+  const cached = sessionLogCache.get(sessionId);
+  if (cached && lineOffset + clampedLimit <= cached.cachedLines) {
+    const lines = cached.rawText.split('\n');
+    const chunk = lines.slice(lineOffset, lineOffset + clampedLimit);
+    return { content: chunk.join('\n') + (chunk.length ? '\n' : ''), lineOffset, lineCount: chunk.length, totalLines: cached.totalLines };
+  }
+  if (cached && cached.totalLines > 0 && lineOffset >= cached.totalLines) {
+    return { content: '', lineOffset, lineCount: 0, totalLines: cached.totalLines };
+  }
+
+  // 3. Relay to container daemon
   const ws = containerWsMap.get(containerId);
   if (!ws) throw new Error('Container offline');
 
   const requestId = crypto.randomUUID();
-  return new Promise<string>((resolve, reject) => {
+  const raw = await new Promise<any>((resolve, reject) => {
     const timer = setTimeout(() => {
-      pendingFileRequests.delete(requestId);
+      pendingSessionLogRequests.delete(requestId);
       reject(new Error('Session log read timeout'));
-    }, 15_000);
-    pendingFileRequests.set(requestId, { resolve, reject, timer });
-    ws.send(JSON.stringify({ type: 'session_log_read', request_id: requestId, session_id: sessionId }));
+    }, 20_000);
+    pendingSessionLogRequests.set(requestId, { resolve, reject, timer });
+    console.log(`[session_log_read] relaying req=${requestId} session=${sessionId.slice(0, 8)} offset=${lineOffset} limit=${clampedLimit}`);
+    ws.send(JSON.stringify({ type: 'session_log_read', request_id: requestId, session_id: sessionId, line_offset: lineOffset, limit: clampedLimit }));
   });
+
+  const content: string = raw.content ?? '';
+  const lineCount: number = raw.line_count ?? content.split('\n').filter(Boolean).length;
+  const totalLines: number = raw.total_lines ?? lineCount;
+
+  // Cache to filesystem as a side-effect when this is a full response from offset 0
+  if (lineOffset === 0 && content) {
+    const container = getContainer(containerId);
+    if (container) {
+      writeSessionLogFile(sessionId, containerId, container.source_repo, 0, lineCount, content, false).catch(() => {});
+    }
+  }
+
+  // Also update in-memory cache
+  const entry = sessionLogCache.get(sessionId) ?? { rawText: '', cachedLines: 0, totalLines: 0, ts: 0 };
+  if (lineOffset === 0) {
+    entry.rawText = content;
+    entry.cachedLines = lineCount;
+  } else if (lineOffset === entry.cachedLines) {
+    entry.rawText += content;
+    entry.cachedLines += lineCount;
+  }
+  entry.totalLines = totalLines;
+  entry.ts = Date.now();
+  sessionLogCache.set(sessionId, entry);
+
+  return { content, lineOffset, lineCount, totalLines };
 }
 
 async function relayFileRead(containerId: string, filename: string): Promise<string> {
@@ -1270,9 +1712,21 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     for (const c of repoContainers) {
       const existing = hostMap.get(c.machine_hostname);
       if (!existing || c.last_seen > existing.lastSeen) {
+        // Canonicalise the workspace path: if the daemon reported a worktree
+        // directory (basename ≠ source_repo), replace the basename with
+        // source_repo so git-hosts.conf points at the main checkout.
+        let workspacePath = c.workspace_host_path ?? null;
+        if (workspacePath) {
+          const sep = workspacePath.includes('\\') ? '\\' : '/';
+          const parts = workspacePath.split(sep);
+          if (parts[parts.length - 1] !== repo) {
+            parts[parts.length - 1] = repo;
+            workspacePath = parts.join(sep);
+          }
+        }
         hostMap.set(c.machine_hostname, {
           hostname: c.machine_hostname,
-          workspacePath: c.workspace_host_path ?? null,
+          workspacePath,
           lastSeen: c.last_seen,
         });
       }
@@ -1322,16 +1776,21 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     }
   }
 
-  // GET /dashboard/session-log/:containerId/:sessionId
+  // GET /dashboard/session-log/:containerId/:sessionId?offset=<lines>&limit=<lines>
   if (pathname.match(/^\/dashboard\/session-log\/[^/]+\/[^/]+$/) && method === 'GET') {
     const parts = pathname.split('/');
     const containerId = decodeURIComponent(parts[3]!);
     const sessionId = decodeURIComponent(parts[4]!);
     if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return err('Invalid session ID', 400);
     if (!getContainer(containerId)) return err('Container not found', 404);
+    const lineOffset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10) || 0);
+    const limit = Math.min(
+      Math.max(1, parseInt(url.searchParams.get('limit') ?? String(SESSION_LOG_DEFAULT_LIMIT), 10) || SESSION_LOG_DEFAULT_LIMIT),
+      SESSION_LOG_MAX_LIMIT,
+    );
     try {
-      const content = await relaySessionLogRead(containerId, sessionId);
-      return json({ content });
+      const chunk = await relaySessionLogChunk(containerId, sessionId, lineOffset, limit);
+      return json(chunk);
     } catch (e: any) {
       return err(e.message || 'Session log not found', 503);
     }
@@ -1370,7 +1829,8 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     if (!container) return err('Container not found', 404);
 
     const body = await req.json() as any;
-    const { task_type, description, create_file, auto_commit, commit_mode, plan_disposition, auto_queue_plan } = body;
+    const { task_type, description, create_file, auto_commit, commit_mode, plan_disposition, auto_queue_plan, parent_task_id, link_type: rawLinkType } = body;
+    const linkType = (['follow-up', 'fix-required', 'check', 'other'].includes(rawLinkType) ? rawLinkType : 'follow-up') as 'follow-up' | 'fix-required' | 'check' | 'other';
     let { filename } = body;
     if (!task_type) return err('task_type required');
 
@@ -1378,7 +1838,12 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     // (daemon picks a non-conflicting name and returns the actual filename used).
     if (create_file && filename && description && containerWsMap.has(containerId)) {
       const actualFn = await relayFileWriteNew(containerId, filename, description).catch(() => null);
-      if (actualFn) filename = actualFn;
+      if (actualFn) {
+        filename = actualFn;
+        // Cache immediately so clicking the filename works without waiting for daemon heartbeat
+        if (!plansFilesCache.has(containerId)) plansFilesCache.set(containerId, new Map());
+        plansFilesCache.get(containerId)!.set(actualFn, description);
+      }
     }
 
     const effectiveMode = (['auto', 'stage', 'manual'].includes(commit_mode) ? commit_mode : (auto_commit ? 'auto' : 'none')) as 'none' | 'auto' | 'stage' | 'manual';
@@ -1388,10 +1853,36 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     // For make-plan, write the prompt to the filename directly (filename IS make-plan-*.md)
     if (task_type === 'make-plan' && filename && description) {
       await relayFileWrite(containerId, filename, description).catch(() => {});
+      if (!plansFilesCache.has(containerId)) plansFilesCache.set(containerId, new Map());
+      plansFilesCache.get(containerId)!.set(filename, description);
+    }
+    // For investigate, write the prompt to the filename directly (filename IS investigate-*.md)
+    if (task_type === 'investigate' && filename && description) {
+      await relayFileWrite(containerId, filename, description).catch(() => {});
+      if (!plansFilesCache.has(containerId)) plansFilesCache.set(containerId, new Map());
+      plansFilesCache.get(containerId)!.set(filename, description);
     }
 
-    // Write updated planq file through daemon
-    await writePlanqFile(containerId, container).catch(() => {});
+    // Resolve parent task key for subtask insertion (used by daemon to place it after the parent)
+    let parentTaskKey: string | undefined;
+    if (parent_task_id) {
+      const parentTask = getPlanqTasks(containerId).find(t => t.id === parent_task_id);
+      if (parentTask) {
+        updatePlanqTask(task.id, { parent_task_id, link_type: linkType });
+        parentTaskKey = parentTask.filename ?? parentTask.description ?? undefined;
+      }
+    }
+
+    sendApplyChanges(containerId, [{
+      id: crId(), type: 'add_task', source: 'dashboard', timestamp: Date.now() / 1000,
+      task_key: task.filename ?? task.description,
+      payload: {
+        task_type: task.task_type, filename: task.filename, description: task.description,
+        status: task.status, commit_mode: task.commit_mode,
+        plan_disposition: task.plan_disposition, auto_queue_plan: task.auto_queue_plan,
+        parent_task_key: parentTaskKey,
+      },
+    }]);
 
     broadcastDashboard({ type: 'planq_update', data: { container_id: containerId, tasks: getPlanqTasks(containerId) } });
     return json(task, 201);
@@ -1406,7 +1897,7 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     if (!container) return err('Container not found', 404);
 
     const body = await req.json() as any;
-    const updates: { description?: string; status?: string; auto_commit?: boolean; commit_mode?: 'none' | 'auto' | 'stage' | 'manual' } = {};
+    const updates: { description?: string; status?: string; auto_commit?: boolean; commit_mode?: 'none' | 'auto' | 'stage' | 'manual'; review_status?: string } = {};
     if (body.description !== undefined) updates.description = body.description;
     if (body.status !== undefined) updates.status = body.status;
     if (body.commit_mode !== undefined && ['none', 'auto', 'stage', 'manual'].includes(body.commit_mode)) {
@@ -1414,11 +1905,42 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     } else if (body.auto_commit !== undefined) {
       updates.auto_commit = Boolean(body.auto_commit);
     }
+    if (body.review_status !== undefined) updates.review_status = body.review_status;
     const task = updatePlanqTask(taskId, updates);
     if (!task) return err('Task not found', 404);
     touchPlanqServerModified(containerId);
 
-    await writePlanqFile(containerId, container).catch(() => {});
+    // Write review status back to the task file
+    if (body.review_status !== undefined && task.filename && containerWsMap.has(containerId)) {
+      const cache = plansFilesCache.get(containerId);
+      const currentContent = cache?.get(task.filename) ?? '';
+      const reviewStatus = body.review_status as string;
+      let newContent: string;
+      if (!reviewStatus || reviewStatus === 'none') {
+        newContent = currentContent.replace(/^review:\s*\S+[^\n]*/m, '').replace(/^\n/, '');
+      } else if (/^review:\s*/m.test(currentContent)) {
+        newContent = currentContent.replace(/^review:\s*\S*/m, `review: ${reviewStatus}`);
+      } else {
+        const trimmed = currentContent.trimEnd();
+        newContent = trimmed + (trimmed ? '\n' : '') + `review: ${reviewStatus}\n`;
+      }
+      if (cache) cache.set(task.filename, newContent);
+      relayFileWrite(containerId, task.filename, newContent).catch(() => {});
+    }
+
+    // Build ChangeRequests for fields that the container cares about
+    const task_key = task.filename ?? task.description ?? '';
+    const containerChanges: ChangeRequest[] = [];
+    if (body.status !== undefined)
+      containerChanges.push({ id: crId(), type: 'update_status', source: 'dashboard', timestamp: Date.now() / 1000, task_key, payload: { status: body.status } });
+    if (body.commit_mode !== undefined)
+      containerChanges.push({ id: crId(), type: 'update_content', source: 'dashboard', timestamp: Date.now() / 1000, task_key, payload: { field: 'commit_mode', value: task.commit_mode } });
+    else if (body.auto_commit !== undefined)
+      containerChanges.push({ id: crId(), type: 'update_content', source: 'dashboard', timestamp: Date.now() / 1000, task_key, payload: { field: 'commit_mode', value: task.commit_mode } });
+    if (body.description !== undefined)
+      containerChanges.push({ id: crId(), type: 'update_content', source: 'dashboard', timestamp: Date.now() / 1000, task_key, payload: { field: 'description', value: body.description } });
+    sendApplyChanges(containerId, containerChanges);
+
     broadcastDashboard({ type: 'planq_update', data: { container_id: containerId, tasks: getPlanqTasks(containerId) } });
     return json(task);
   }
@@ -1431,11 +1953,18 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const container = getContainer(containerId);
     if (!container) return err('Container not found', 404);
 
+    const taskBeforeArchive = getPlanqTasks(containerId).find(t => t.id === taskId);
     const result = archiveTask(taskId);
     if (!result.ok) return err('Task not found', 404);
     touchPlanqServerModified(containerId);
 
-    await writePlanqFile(containerId, container).catch(() => {});
+    if (taskBeforeArchive) {
+      sendApplyChanges(containerId, [{
+        id: crId(), type: 'delete_task', source: 'dashboard', timestamp: Date.now() / 1000,
+        task_key: taskBeforeArchive.filename ?? taskBeforeArchive.description,
+        payload: {},
+      }]);
+    }
     if (containerWsMap.has(containerId)) {
       await relayFileWrite(containerId, 'archive/planq-history.txt', result.historyContent).catch(() => {});
     }
@@ -1451,11 +1980,18 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const container = getContainer(containerId);
     if (!container) return err('Container not found', 404);
 
+    const taskBeforeDelete = (db.prepare('SELECT * FROM planq_tasks WHERE id = ?').get(taskId) as any);
     const deleted = deletePlanqTask(taskId);
     if (!deleted) return err('Task not found', 404);
     touchPlanqServerModified(containerId);
 
-    await writePlanqFile(containerId, container).catch(() => {});
+    if (taskBeforeDelete) {
+      sendApplyChanges(containerId, [{
+        id: crId(), type: 'delete_task', source: 'dashboard', timestamp: Date.now() / 1000,
+        task_key: taskBeforeDelete.filename ?? taskBeforeDelete.description,
+        payload: {},
+      }]);
+    }
     broadcastDashboard({ type: 'planq_update', data: { container_id: containerId, tasks: getPlanqTasks(containerId) } });
     return json({ ok: true });
   }
@@ -1471,8 +2007,13 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     reorderPlanqTasks(body);
     touchPlanqServerModified(containerId);
 
-    await writePlanqFile(containerId, container).catch(() => {});
-    broadcastDashboard({ type: 'planq_update', data: { container_id: containerId, tasks: getPlanqTasks(containerId) } });
+    const tasksAfterReorder = getPlanqTasks(containerId);
+    const newOrder = tasksAfterReorder.map(t => t.filename ?? t.description ?? '').filter(Boolean);
+    sendApplyChanges(containerId, [{
+      id: crId(), type: 'reorder', source: 'dashboard', timestamp: Date.now() / 1000,
+      task_key: null, payload: { order: newOrder },
+    }]);
+    broadcastDashboard({ type: 'planq_update', data: { container_id: containerId, tasks: tasksAfterReorder } });
     return json({ ok: true });
   }
 
@@ -1482,10 +2023,20 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const container = getContainer(containerId);
     if (!container) return err('Container not found', 404);
 
+    // Collect done tasks before archiving so we can build delete ChangeRequests
+    const doneTasks = getPlanqTasks(containerId).filter(t => t.status === 'done');
     const { count, historyContent } = archiveDoneTasks(containerId);
     touchPlanqServerModified(containerId);
 
-    await writePlanqFile(containerId, container).catch(() => {});
+    if (doneTasks.length > 0) {
+      const deleteChanges: ChangeRequest[] = doneTasks.map(t => ({
+        id: crId(), type: 'delete_task' as const, source: 'dashboard' as const,
+        timestamp: Date.now() / 1000,
+        task_key: t.filename ?? t.description,
+        payload: {},
+      }));
+      sendApplyChanges(containerId, deleteChanges);
+    }
     if (count > 0 && containerWsMap.has(containerId)) {
       await relayFileWrite(containerId, 'archive/planq-history.txt', historyContent).catch(() => {});
     }
@@ -1510,6 +2061,13 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
   // GET /planq/:id/plans-files
   if (pathname.match(/^\/planq\/[^/]+\/plans-files$/) && method === 'GET') {
     const containerId = decodeURIComponent(pathname.split('/')[2]!);
+
+    // Serve from push cache when initialised (works even when container is offline)
+    if (plansFilesCacheReady.has(containerId)) {
+      const files = [...(plansFilesCache.get(containerId)?.keys() ?? [])].sort();
+      return json(files);
+    }
+
     if (!containerWsMap.has(containerId)) return err('Container offline', 503);
     try {
       const files = await relayFileList(containerId);
@@ -1524,6 +2082,10 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const parts = pathname.split('/');
     const containerId = decodeURIComponent(parts[2]!);
     const filename = parts.slice(4).join('/'); // everything after /file/
+
+    // Serve from push cache when available (works even when container is offline)
+    const cached = plansFilesCache.get(containerId)?.get(filename);
+    if (cached !== undefined) return json({ content: cached });
 
     if (!containerWsMap.has(containerId)) return err('Container offline', 503);
 
@@ -1547,6 +2109,9 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const content = body.content ?? '';
     try {
       await relayFileWrite(containerId, filename, content);
+      // Update cache so subsequent reads reflect the new content immediately
+      if (!plansFilesCache.has(containerId)) plansFilesCache.set(containerId, new Map());
+      plansFilesCache.get(containerId)!.set(filename, content);
       return json({ ok: true });
     } catch (e: any) {
       return err(e.message || 'File write failed', 503);
@@ -1557,32 +2122,91 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
   if (pathname === '/dashboard/system-versions' && method === 'GET') {
     const containers = getAllContainers().map(c => ({
       id: c.id,
+      source_repo: c.source_repo,
       machine_hostname: c.machine_hostname,
       workspace_host_path: c.workspace_host_path,
       connected: c.connected,
       versions: c.versions,
     }));
     const host_source_reports = getAllHostSourceReports();
-    return json({ containers, host_source_reports });
+    // Read the canonical reference stamp for the given component.
+    // Priority:
+    //   1. ~/.local/devcontainer-sandbox/versions/<name>  — written by apply-daemon/apply-shell
+    //      on the host each time components are updated across projects.  Always reflects the
+    //      most recently applied version, regardless of whether the sandbox repo itself is a
+    //      registered project.
+    //   2. /workspace/.devcontainer/versions/<name>       — the server container's own stamp
+    //   3. Relative to server source (devcontainer-sandbox repo's .devcontainer/versions/)
+    async function readServerStamp(name: string): Promise<string | null> {
+      const homeDir = process.env.HOME || '';
+      const candidates = [
+        homeDir ? homeDir + '/.local/devcontainer-sandbox/versions/' + name : '',
+        '/workspace/.devcontainer/versions/' + name,
+        new URL('../../../../.devcontainer/versions/' + name, import.meta.url).pathname,
+      ].filter(Boolean);
+      for (const p of candidates) {
+        try { return (await Bun.file(p).text()).trim(); } catch {}
+      }
+      return null;
+    }
+    const server_stamps = {
+      devcontainer: await readServerStamp('devcontainer'),
+      planq_daemon: await readServerStamp('planq-daemon'),
+      planq_shell: await readServerStamp('planq-shell'),
+    };
+    return json({ containers, host_source_reports, server_stamps });
   }
 
   // POST /dashboard/restart-planq/:containerId
   if (pathname.match(/^\/dashboard\/restart-planq\/[^/]+$/) && method === 'POST') {
     const containerId = decodeURIComponent(pathname.slice('/dashboard/restart-planq/'.length));
     const ws = containerWsMap.get(containerId);
-    if (!ws) return err('Container offline or not found', 404);
+    if (!ws) {
+      console.log(`[restart-planq] container not found or offline: ${containerId}`);
+      return err('Container offline or not found', 404);
+    }
     try {
       ws.send(JSON.stringify({ type: 'restart' }));
+      console.log(`[restart-planq] sent restart to container ${containerId}`);
       return json({ ok: true });
     } catch (e: any) {
+      console.log(`[restart-planq] send failed for ${containerId}: ${e.message}`);
       return err(e.message || 'Send failed', 503);
     }
+  }
+
+  // GET /planq/:containerId/tasks/:taskId/sessions — sessions associated with a task
+  if (pathname.match(/^\/planq\/[^/]+\/tasks\/\d+\/sessions$/) && method === 'GET') {
+    const parts = pathname.split('/');
+    const taskId = parseInt(parts[4] ?? '', 10);
+    const sessionIds = getSessionsForTask(taskId);
+    return json({ session_ids: sessionIds });
+  }
+
+  // GET /planq/:containerId/sessions/:sessionId/tasks — tasks associated with a session
+  if (pathname.match(/^\/planq\/[^/]+\/sessions\/[^/]+\/tasks$/) && method === 'GET') {
+    const parts = pathname.split('/');
+    const containerId = decodeURIComponent(parts[2] ?? '');
+    const sessionId = decodeURIComponent(parts[4] ?? '');
+    const tasks = getTasksForSession(containerId, sessionId);
+    return json({ tasks });
+  }
+
+  // GET /planq/:containerId/sessions/:sessionId/commits — commits associated with a session
+  if (pathname.match(/^\/planq\/[^/]+\/sessions\/[^/]+\/commits$/) && method === 'GET') {
+    const parts = pathname.split('/');
+    const containerId = decodeURIComponent(parts[2] ?? '');
+    const sessionId = decodeURIComponent(parts[4] ?? '');
+    const container = getContainer(containerId);
+    if (!container) return err('Container not found', 404);
+    const hashes = getCommitsForSession(container.source_repo, sessionId);
+    return json({ hashes });
   }
 
   return null; // not handled
 }
 
-// ── Planq three-way merge ─────────────────────────────────────────────────────
+// ── Planq three-way merge (kept for reference; replaced by reapplyPendingChangesToProjection) ──
 
 // Status ordering: higher = more advanced/done
 const STATUS_ORDER: Record<string, number> = {
@@ -1611,11 +2235,15 @@ interface MergeConflict {
 }
 
 /**
- * Three-way merge of planq task lists.
- * base: last state that was successfully synced to both sides
- * server: current server DB state
- * container: current container state (from daemon heartbeat)
- * Returns: { merged: PlanqItem[], conflicts: MergeConflict[], hasChanges: boolean }
+ * Merge planq task lists from server DB and container daemon heartbeat.
+ * base: last state that was successfully synced to both sides (for status tracking)
+ * server: current server DB state — AUTHORITATIVE for ordering
+ * container: current container state (from daemon heartbeat) — contributes status changes + new tasks
+ *
+ * Ordering is always determined by the server. The container can only:
+ *   - Change task statuses (picked up via three-way merge against base)
+ *   - Add new tasks (container-only tasks are appended after server tasks)
+ *
  * hasChanges is true if the merged result differs from the container state (need to push to container)
  */
 function mergePlanqLists(
@@ -1631,12 +2259,13 @@ function mergePlanqLists(
   for (const t of server) { const k = taskKey(t); if (k) serverMap.set(k, t); }
   for (const t of container) { const k = taskKey(t); if (k) containerMap.set(k, t); }
 
-  const allKeys = new Set([...baseMap.keys(), ...serverMap.keys(), ...containerMap.keys()]);
   const result: PlanqItem[] = [];
   const conflicts: MergeConflict[] = [];
 
-  // Preserve container ordering: process container tasks first, then append server-only tasks
-  const containerKeysInOrder = container.map(taskKey).filter(k => k);
+  // Server ordering is authoritative — process tasks in server order
+  const serverKeysInOrder = server.map(taskKey).filter(k => k) as string[];
+  // Container order is only used to pick up new tasks added by the container
+  const containerKeysInOrder = container.map(taskKey).filter(k => k) as string[];
   const processedKeys = new Set<string>();
 
   function mergeOne(key: string): PlanqItem | null {
@@ -1644,7 +2273,7 @@ function mergePlanqLists(
     const serverTask = serverMap.get(key);
     const containerTask = containerMap.get(key);
 
-    // Not in server at all: keep container's version (container added it, or server removed it — keep container's)
+    // Not in server: container-only task (container added it) — keep as-is
     if (!serverTask) {
       return containerTask ?? null;
     }
@@ -1652,94 +2281,82 @@ function mergePlanqLists(
     // In server but not in container
     if (!containerTask) {
       if (!baseTask) {
-        // New in server, not in container → add to container
+        // New in server, not yet received by container → include (container will get it on push)
         return serverTask;
       }
       // Was in base, container removed it → respect container removal
       return null;
     }
 
-    // In both server and container
-    if (!baseTask) {
-      // New in both — conflict, keep container's version
-      conflicts.push({ key, type: 'new-in-both', server: serverTask, container: containerTask });
-      return containerTask;
-    }
+    // In both server and container — apply three-way status merge
+    const baseTask_ = baseTask ?? serverTask; // fallback: treat server as base if no base known
+    const serverStatusChanged = serverTask.status !== baseTask_.status;
+    const containerStatusChanged = containerTask.status !== baseTask_.status;
+    const serverTextChanged = serverTask.description !== baseTask_.description;
+    const containerTextChanged = containerTask.description !== baseTask_.description;
+    const serverCommitModeChanged = serverTask.commit_mode !== baseTask_.commit_mode;
+    const containerCommitModeChanged = containerTask.commit_mode !== baseTask_.commit_mode;
 
-    // Three-way merge
-    const serverStatusChanged = serverTask.status !== baseTask.status;
-    const containerStatusChanged = containerTask.status !== baseTask.status;
-    const serverTextChanged = serverTask.description !== baseTask.description;
-    const containerTextChanged = containerTask.description !== baseTask.description;
-    const serverCommitModeChanged = serverTask.commit_mode !== baseTask.commit_mode;
-    const containerCommitModeChanged = containerTask.commit_mode !== baseTask.commit_mode;
+    let mergedStatus = serverTask.status; // server is default
+    let mergedDescription = serverTask.description;
+    let mergedCommitMode = serverTask.commit_mode;
 
-    let mergedStatus = containerTask.status;
-    let mergedDescription = containerTask.description;
-    let mergedCommitMode = containerTask.commit_mode;
-
-    // Status merge
+    // Status: container changes propagate up; server changes propagate down
     if (serverStatusChanged && containerStatusChanged && serverTask.status !== containerTask.status) {
-      // Both changed status to different values
+      // Both changed to different values — pick the more advanced one
       const containerLevel = statusLevel(containerTask.status);
       const serverLevel = statusLevel(serverTask.status);
       if (containerLevel >= statusLevel('done') && serverLevel < statusLevel('done')) {
-        // Container is done, server tries to re-activate → container wins (no re-activation)
-        mergedStatus = containerTask.status;
-      } else if (serverLevel > containerLevel) {
-        // Server is more advanced → server wins
-        mergedStatus = serverTask.status;
+        mergedStatus = containerTask.status; // Container done → don't downgrade
       } else if (containerLevel > serverLevel) {
-        // Container is more advanced → container wins
-        mergedStatus = containerTask.status;
+        mergedStatus = containerTask.status; // Container further along
+      } else if (serverLevel > containerLevel) {
+        mergedStatus = serverTask.status; // Server further along
       } else {
-        // Same level, different statuses → conflict, container wins
         conflicts.push({ key, type: 'status-conflict', base: baseTask, server: serverTask, container: containerTask });
-        mergedStatus = containerTask.status;
+        mergedStatus = serverTask.status; // Same level — server wins
       }
-    } else if (serverStatusChanged && !containerStatusChanged) {
-      // Only server changed status, but check: if container is done, don't downgrade
-      if (statusLevel(containerTask.status) >= statusLevel('done') && statusLevel(serverTask.status) < statusLevel('done')) {
-        mergedStatus = containerTask.status; // Keep container done
-      } else {
-        mergedStatus = serverTask.status; // Apply server change
-      }
-    } else if (containerStatusChanged) {
-      mergedStatus = containerTask.status; // Keep container change
+    } else if (containerStatusChanged && !serverStatusChanged) {
+      // Only container changed status → apply it (container ran/completed the task)
+      mergedStatus = containerTask.status;
     }
+    // If only server changed (or neither changed), server's status is already the default
 
-    // Text merge
-    if (serverTextChanged && containerTextChanged && serverTask.description !== containerTask.description) {
-      // Both changed text differently — conflict: add duplicate with conflict suffix
-      conflicts.push({ key, type: 'text-changed', base: baseTask, server: serverTask, container: containerTask });
-      mergedDescription = containerTask.description; // Keep container's text
+    // Text: container change wins (user may have edited locally); server change wins if container unchanged
+    if (containerTextChanged) {
+      mergedDescription = containerTask.description;
     } else if (serverTextChanged && !containerTextChanged) {
-      mergedDescription = serverTask.description; // Apply server text change
+      if (!baseTask) {
+        // new-in-both with different text — keep both (conflict)
+        conflicts.push({ key, type: 'new-in-both', server: serverTask, container: containerTask });
+      }
+      mergedDescription = serverTask.description;
     }
 
-    // Commit mode merge (server wins if container unchanged)
-    if (serverCommitModeChanged && !containerCommitModeChanged) {
-      mergedCommitMode = serverTask.commit_mode;
+    // Commit mode: server wins (set via dashboard)
+    if (!containerCommitModeChanged) {
+      mergedCommitMode = serverTask.commit_mode; // already the default
+    } else if (!serverCommitModeChanged && containerCommitModeChanged) {
+      mergedCommitMode = containerTask.commit_mode; // container changed it, server didn't
     }
 
     return {
-      ...containerTask,
+      ...serverTask,
       status: mergedStatus,
       description: mergedDescription,
       commit_mode: mergedCommitMode,
     };
   }
 
-  // Process in container order first
-  for (const key of containerKeysInOrder) {
-    if (processedKeys.has(key)) continue;
+  // Pass 1: server order (authoritative)
+  for (const key of serverKeysInOrder) {
     processedKeys.add(key);
     const merged = mergeOne(key);
     if (merged) result.push(merged);
   }
 
-  // Append server-only new tasks (not in container at all)
-  for (const key of allKeys) {
+  // Pass 2: container-only new tasks (not yet known to server) — append after server tasks
+  for (const key of containerKeysInOrder) {
     if (processedKeys.has(key)) continue;
     processedKeys.add(key);
     const merged = mergeOne(key);
@@ -1765,12 +2382,13 @@ function mergePlanqLists(
   return { merged: result, conflicts, hasChanges };
 }
 
-// Write the planq-order.txt through the daemon for a given container
+// Write the planq-order.txt through the daemon for a given container.
+// Does NOT update planq_last_synced — that is only updated once the daemon
+// acknowledges the new state via a heartbeat, so the three-way merge can
+// correctly detect which side made an intentional change.
 async function writePlanqFile(containerId: string, _container: ContainerRow): Promise<void> {
   const tasks = getPlanqTasks(containerId);
   const content = serializePlanqOrder(tasks);
   await relayFileWrite(containerId, 'planq-order.txt', content);
   planqSyncedAt.set(containerId, Date.now());
-  const currentSerialized = serializePlanqOrder(getPlanqTasks(containerId));
-  setPlanqLastSynced(containerId, currentSerialized);
 }

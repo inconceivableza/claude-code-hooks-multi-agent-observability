@@ -10,9 +10,9 @@ async function fetchInitial() {
     const res = await fetch(`${API_BASE}/dashboard/containers`)
     if (!res.ok) return
     const data: ContainerWithState[] = await res.json()
-    const map = new Map<string, ContainerWithState>()
-    for (const c of data) map.set(c.id, c)
-    containers.value = map
+    // In-place mutation — never replace containers.value, so Vue preserves all
+    // component instances and their local state (filters, open panels, etc.).
+    for (const c of data) containers.value.set(c.id, c)
   } catch {
     // ignore
   }
@@ -20,36 +20,35 @@ async function fetchInitial() {
 
 function handleMessage(msg: DashboardMessage) {
   if (msg.type === 'initial') {
-    const map = new Map<string, ContainerWithState>()
-    for (const c of msg.data) map.set(c.id, c)
-    containers.value = map
+    // Merge rather than replace: update/add containers from the server's list, but
+    // keep any existing containers that are absent from this message (they may have
+    // temporarily dropped during a WS reconnect window).  Explicit removals arrive
+    // via container_removed messages; an absence from 'initial' alone is not
+    // authoritative enough to destroy component state such as open dialogs or
+    // in-progress task edits.
+    //
+    // Mutate in-place so Vue never destroys and recreates component instances —
+    // this preserves ephemeral UI state (open dialogs, filter selections, etc.).
+    for (const c of msg.data) containers.value.set(c.id, c)
   } else if (msg.type === 'container_update') {
-    const updated = new Map(containers.value)
-    updated.set(msg.data.id, msg.data)
-    containers.value = updated
+    containers.value.set(msg.data.id, msg.data)
   } else if (msg.type === 'container_removed') {
-    const updated = new Map(containers.value)
-    updated.delete(msg.data.id)
-    containers.value = updated
+    containers.value.delete(msg.data.id)
   } else if (msg.type === 'planq_update') {
-    const updated = new Map(containers.value)
-    const c = updated.get(msg.data.container_id)
-    if (c) updated.set(c.id, { ...c, planq_tasks: msg.data.tasks })
-    containers.value = updated
+    const c = containers.value.get(msg.data.container_id)
+    if (c) containers.value.set(c.id, { ...c, planq_tasks: msg.data.tasks })
   } else if (msg.type === 'agent_update') {
     // Update session status within matching containers
-    const updated = new Map(containers.value)
-    for (const [id, c] of updated) {
+    for (const [id, c] of containers.value) {
       if (c.source_repo === msg.data.source_repo && c.active_session_ids.includes(msg.data.session_id)) {
         const sessions = c.sessions.map(s =>
           s.session_id === msg.data.session_id
             ? { ...s, status: msg.data.status as any, last_prompt: msg.data.last_prompt, last_response_summary: msg.data.last_response_summary }
             : s
         )
-        updated.set(id, { ...c, sessions })
+        containers.value.set(id, { ...c, sessions })
       }
     }
-    containers.value = updated
   }
 }
 
@@ -80,6 +79,13 @@ const summary = computed(() => {
 
 fetchInitial()
 
+function updatePlanqTaskOptimistic(containerId: string, taskId: number, updates: Record<string, unknown>) {
+  const c = containers.value.get(containerId)
+  if (!c) return
+  const tasks = c.planq_tasks?.map(t => t.id === taskId ? { ...t, ...updates } : t) ?? []
+  containers.value.set(c.id, { ...c, planq_tasks: tasks })
+}
+
 export function useContainers() {
-  return { containers, byHost, summary, handleMessage }
+  return { containers, byHost, summary, handleMessage, updatePlanqTaskOptimistic }
 }

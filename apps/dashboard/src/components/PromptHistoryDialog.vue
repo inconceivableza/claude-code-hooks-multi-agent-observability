@@ -40,11 +40,26 @@
           </select>
 
           <span v-if="loading" class="text-xs text-slate-500 italic">Loading…</span>
+          <span v-else-if="loadingMore" class="text-xs text-slate-500 italic">Loading more…</span>
           <span v-else-if="selectedSessionId" class="text-xs text-slate-500">
             {{ promptBlocks.length }} prompt{{ promptBlocks.length !== 1 ? "s" : "" }}
+            <template v-if="loadedLines < totalLines"> · {{ loadedLines }}/{{ totalLines }} lines</template>
           </span>
         </div>
         <div class="flex items-center gap-3">
+          <!-- Rendered / Raw toggle -->
+          <div class="flex items-center gap-1 text-xs">
+            <button
+              @click="renderMarkdown = true"
+              class="px-2 py-0.5 rounded border"
+              :class="renderMarkdown ? 'bg-slate-600 border-slate-500 text-slate-200' : 'bg-transparent border-slate-700 text-slate-500 hover:text-slate-400'"
+            >Rendered</button>
+            <button
+              @click="renderMarkdown = false"
+              class="px-2 py-0.5 rounded border"
+              :class="!renderMarkdown ? 'bg-slate-600 border-slate-500 text-slate-200' : 'bg-transparent border-slate-700 text-slate-500 hover:text-slate-400'"
+            >Raw</button>
+          </div>
           <!-- Prompt navigation -->
           <div
             v-if="promptBlocks.length > 1"
@@ -104,7 +119,8 @@
                 copy
               </button>
             </div>
-            <pre class="text-sm text-slate-100 whitespace-pre-wrap font-sans leading-relaxed">{{ block.text }}</pre>
+            <MarkdownContent v-if="renderMarkdown" :content="block.text" class="text-sm text-slate-100" />
+            <pre v-else class="text-sm text-slate-100 whitespace-pre-wrap font-sans leading-relaxed">{{ block.text }}</pre>
           </div>
 
           <!-- Assistant response block -->
@@ -119,7 +135,8 @@
                 copy
               </button>
             </div>
-            <pre class="text-sm text-slate-300 whitespace-pre-wrap font-sans leading-relaxed">{{ block.text }}</pre>
+            <MarkdownContent v-if="renderMarkdown" :content="block.text" class="text-sm text-slate-300" />
+            <pre v-else class="text-sm text-slate-300 whitespace-pre-wrap font-sans leading-relaxed">{{ block.text }}</pre>
           </div>
 
           <!-- Tool use block -->
@@ -162,6 +179,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { API_BASE } from "../config";
 import { useHostnameAliases } from "../composables/useHostnameAliases";
+import MarkdownContent from "./MarkdownContent.vue";
 import type { ContainerWithState } from "../types";
 
 const props = defineProps<{
@@ -170,13 +188,17 @@ const props = defineProps<{
   initialSessionId: string;
 }>();
 
-defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: [] }>();
 
 const { alias } = useHostnameAliases();
 
+const renderMarkdown = ref(true);
 const loading = ref(false);
+const loadingMore = ref(false);
 const error = ref("");
 const rawLines = ref<any[]>([]);
+const loadedLines = ref(0);
+const totalLines = ref(0);
 const scrollContainer = ref<HTMLElement | null>(null);
 const currentPromptIndex = ref(0);
 
@@ -320,42 +342,89 @@ function formatToolInput(name: string, input: any): string {
   }
 }
 
+const CHUNK_SIZE = 1000;
+
+function parseLines(content: string): any[] {
+  return content
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(Boolean);
+}
+
+async function loadChunk(offset: number, isIncremental = false): Promise<boolean> {
+  if (!selectedSessionId.value || !activeContainerId.value) return false;
+  const url = `${API_BASE}/dashboard/session-log/${encodeURIComponent(activeContainerId.value)}/${encodeURIComponent(selectedSessionId.value)}?offset=${offset}&limit=${CHUNK_SIZE}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const { content, lineCount, totalLines: total } = await res.json();
+  totalLines.value = total;
+  if (lineCount > 0) {
+    const parsed = parseLines(content);
+    if (isIncremental) {
+      rawLines.value = [...rawLines.value, ...parsed];
+    } else {
+      rawLines.value = [...rawLines.value, ...parsed];
+    }
+    loadedLines.value = offset + lineCount;
+  }
+  return lineCount > 0;
+}
+
 async function load() {
   if (!selectedSessionId.value || !activeContainerId.value) return;
   loading.value = true;
+  loadingMore.value = false;
   error.value = "";
   rawLines.value = [];
+  loadedLines.value = 0;
+  totalLines.value = 0;
   try {
-    const res = await fetch(
-      `${API_BASE}/dashboard/session-log/${encodeURIComponent(activeContainerId.value)}/${encodeURIComponent(selectedSessionId.value)}`,
-    );
-    if (!res.ok) {
-      error.value = `Failed to load log (${res.status})`;
-      return;
-    }
-    const { content } = await res.json();
-    rawLines.value = content
-      .split("\n")
-      .filter(Boolean)
-      .map((l: string) => {
-        try {
-          return JSON.parse(l);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    await loadChunk(0);
     await nextTick();
     if (promptBlocks.value.length > 0) {
       currentPromptIndex.value = promptBlocks.value.length - 1;
       scrollToPrompt(currentPromptIndex.value);
     }
+    // Auto-load remaining chunks in the background
+    while (loadedLines.value < totalLines.value) {
+      loadingMore.value = true;
+      await loadChunk(loadedLines.value);
+    }
   } catch (e: any) {
     error.value = e?.message ?? "Unknown error";
   } finally {
     loading.value = false;
+    loadingMore.value = false;
   }
 }
+
+async function loadIncremental() {
+  if (!selectedSessionId.value || !activeContainerId.value) return;
+  if (loadedLines.value === 0) return; // not yet loaded
+  try {
+    let fetched = true;
+    while (fetched && loadedLines.value < totalLines.value || totalLines.value === 0) {
+      fetched = await loadChunk(loadedLines.value, true);
+      if (totalLines.value > 0 && loadedLines.value >= totalLines.value) break;
+      if (!fetched) break;
+    }
+  } catch { /* ignore incremental errors */ }
+}
+
+// Watch session status: fetch incremental content when session stops being busy
+const activeSessionStatus = computed(() => {
+  const session = availableSessions.value.find(s => s.session_id === selectedSessionId.value);
+  if (!session) return null;
+  const container = props.containers.find(c => c.id === session.container_id);
+  return container?.sessions.find(s => s.session_id === selectedSessionId.value)?.status ?? null;
+});
+
+watch(activeSessionStatus, (newStatus, oldStatus) => {
+  if (oldStatus === 'busy' && newStatus !== 'busy' && loadedLines.value > 0) {
+    loadIncremental();
+  }
+});
 
 watch(selectedSessionId, () => {
   currentPromptIndex.value = 0;
@@ -401,6 +470,7 @@ async function copyText(text: string) {
 }
 
 function onGlobalKey(e: KeyboardEvent) {
+  if (e.key === "Escape") { emit("close"); return; }
   if (e.key === "ArrowUp") prevPrompt();
   if (e.key === "ArrowDown") nextPrompt();
 }

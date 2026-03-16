@@ -1,5 +1,5 @@
 <template>
-  <div ref="scrollEl" class="overflow-auto max-h-[60vh] relative">
+  <div ref="scrollEl" class="overflow-auto h-full relative">
     <svg
       ref="svgEl"
       :width="svgWidth"
@@ -47,7 +47,7 @@
           :fill="isHeadCommit(row.commit.hash) ? '#fff' : laneColor(row.lane)"
           :stroke="dirtyRing(row.commit.hash) ? '#fb923c' : 'none'"
           stroke-width="2"
-          class="cursor-pointer"
+class="cursor-pointer"
           @click="$emit('select-hash', row.commit.hash)"
         />
         <!-- Dirty indicator ring -->
@@ -166,12 +166,11 @@
             v-for="(badge, bi) in allBadgesForCommit(row.commit)"
             :key="'pr-' + bi"
             v-show="badge.prUrl && (badgeOffsets[i]?.[bi]?.prW ?? 0) > 0"
-            :href="badge.prDirty ? undefined : badge.prUrl"
+            :href="badge.prUrl"
             target="_blank"
-            @click.stop="badge.prDirty ? undefined : undefined"
-            @dblclick.stop="badge.prDirty && badge.prUrl ? openPrUrl(badge.prUrl) : undefined"
+            @click.stop="badge.prUrl && openPrUrl(badge.prUrl)"
             class="cursor-pointer"
-            :title="badge.prDirty ? 'Has unstaged changes — double-click to open PR anyway' : (badge.prExists ? (badge.prDraft ? 'View draft PR on GitHub' : 'View PR on GitHub') : 'Create pull request on GitHub')"
+            :title="badge.prDirty ? 'Has unstaged changes — open PR anyway?' : (badge.prExists ? (badge.prDraft ? 'View draft PR on GitHub' : 'View PR on GitHub') : 'Create pull request on GitHub')"
           >
             <g :transform="`translate(${badgeOffsets[i]?.[bi]?.prX ?? 0}, -6) scale(0.875)`">
               <rect width="16" height="13" :fill="badge.prDirty ? '#1a1a1a' : (badge.prExists ? (badge.prDraft ? '#1e1e3f' : '#0c1a2e') : '#052e16')" rx="2" opacity="0.85" />
@@ -227,8 +226,20 @@
             font-family="sans-serif"
             fill="#cbd5e1"
             class="cursor-pointer hover:fill-white"
-            @click.stop="onSubjectClick(i, $event)"
+            @click.stop="$emit('select-hash', row.commit.hash)"
           >{{ clippedSubject(i) }}</text>
+
+          <!-- Session link badge -->
+          <text
+            v-if="row.commit.session_ids?.length"
+            :x="svgWidth - AUTHOR_W - DATE_W - labelX - 18"
+            y="4"
+            font-size="10"
+            fill="#818cf8"
+            class="cursor-pointer hover:fill-white"
+            :title="`${row.commit.session_ids.length} linked session(s)`"
+            @click.stop="$emit('open-session', row.commit.session_ids[row.commit.session_ids.length - 1])"
+          >💬</text>
 
           <!-- Author column -->
           <text
@@ -297,26 +308,6 @@
       </div>
     </Teleport>
 
-    <!-- Commit message popup (teleported to body) -->
-    <Teleport to="body">
-      <div
-        v-if="activeCommitPopover"
-        class="fixed z-[9999] w-[480px] max-w-[90vw] bg-slate-900 border border-slate-600 rounded-lg shadow-2xl p-3 overflow-auto"
-        :style="{ left: activeCommitPopover.x + 'px', top: activeCommitPopover.y + 'px', maxHeight: '60vh' }"
-        @click.stop
-      >
-        <div class="flex items-center justify-between mb-2 gap-4">
-          <span class="text-xs font-mono text-yellow-400">{{ activeCommitPopover.hash.slice(0, 8) }}</span>
-          <button @click="activeCommitPopover = null" class="text-slate-500 hover:text-slate-300 text-xs shrink-0">✕</button>
-        </div>
-        <div v-if="activeCommitPopover.loading" class="text-xs text-slate-500 italic">Loading…</div>
-        <template v-else>
-          <pre v-if="activeCommitPopover.message" class="text-xs text-slate-200 whitespace-pre-wrap mb-3 font-sans">{{ activeCommitPopover.message.trim() }}</pre>
-          <pre v-if="activeCommitPopover.diffstat" class="text-xs text-slate-400 font-mono whitespace-pre overflow-x-auto border-t border-slate-700 pt-2 mt-1">{{ activeCommitPopover.diffstat.trim() }}</pre>
-          <div v-if="!activeCommitPopover.message && !activeCommitPopover.diffstat" class="text-xs text-slate-500 italic">No details available.</div>
-        </template>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -366,6 +357,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'select-hash': [hash: string]
+  'open-session': [sessionId: string]
 }>()
 
 const scrollEl = ref<HTMLElement | null>(null)
@@ -685,51 +677,6 @@ function clippedSubject(rowIndex: number): string {
   return s.slice(0, Math.max(0, maxChars - 1)) + '…'
 }
 
-// --- Commit message popup ---
-
-interface CommitPopover {
-  x: number
-  y: number
-  hash: string
-  message: string
-  diffstat: string
-  loading: boolean
-}
-
-const activeCommitPopover = ref<CommitPopover | null>(null)
-
-async function onSubjectClick(rowIndex: number, event: MouseEvent) {
-  const row = layout.value[rowIndex]
-  if (!row || !props.sourceRepo) return
-
-  if (activeCommitPopover.value?.hash === row.commit.hash) {
-    activeCommitPopover.value = null
-    return
-  }
-
-  // Clamp popup so it stays on screen
-  const popupW = 480
-  const popupMaxH = window.innerHeight * 0.6
-  const x = Math.min(event.clientX + 8, window.innerWidth - popupW - 8)
-  const y = Math.min(event.clientY + 8, window.innerHeight - popupMaxH - 8)
-
-  activeCommitPopover.value = { x, y, hash: row.commit.hash, message: '', diffstat: '', loading: true }
-
-  try {
-    const res = await fetch(`${API_BASE}/dashboard/git-show/${encodeURIComponent(props.sourceRepo)}/${row.commit.hash}`)
-    if (res.ok) {
-      const data = await res.json()
-      if (activeCommitPopover.value?.hash === row.commit.hash) {
-        activeCommitPopover.value = { ...activeCommitPopover.value, message: data.message ?? '', diffstat: data.diffstat ?? '', loading: false }
-      }
-    } else {
-      if (activeCommitPopover.value?.hash === row.commit.hash) activeCommitPopover.value = { ...activeCommitPopover.value, loading: false }
-    }
-  } catch {
-    if (activeCommitPopover.value?.hash === row.commit.hash) activeCommitPopover.value = { ...activeCommitPopover.value, loading: false }
-  }
-}
-
 function absoluteDate(unixTs: number): string {
   return new Date(unixTs * 1000).toLocaleString()
 }
@@ -762,7 +709,7 @@ function scrollToHash(hash: string) {
   const targetScroll = y - el.clientHeight / 2
   el.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' })
   flashHash.value = hash
-  setTimeout(() => { if (flashHash.value === hash) flashHash.value = null }, 1500)
+  setTimeout(() => { if (flashHash.value === hash) flashHash.value = null }, 3000)
 }
 
 // --- Dirty diffstat popover ---
@@ -809,7 +756,6 @@ function closeDirtyPopover() {
 
 function onDocumentClick() {
   if (activeDirtyPopover.value) activeDirtyPopover.value = null
-  if (activeCommitPopover.value) activeCommitPopover.value = null
 }
 
 onMounted(() => {

@@ -102,61 +102,150 @@
         </div>
       </div>
 
-      <!-- Body -->
-      <div class="flex-1 overflow-auto p-4">
-        <!-- Show loading/error only on initial load (no data yet); during refreshes keep graph mounted -->
-        <div v-if="loading && !gitData" class="text-xs text-slate-500 italic">Loading…</div>
-        <div v-else-if="error && !gitData" class="text-xs text-red-400">{{ error }}</div>
-        <template v-else-if="gitData">
-          <GitGraphView
-            v-if="mode === 'graph'"
-            ref="graphRef"
-            :commits="gitData.commits"
-            :containers="filteredContainers"
-            :refs-per-host="filteredRefsPerHost"
-            :selected-hash="selectedHash"
-            :remote-url="gitData.remote_url ?? undefined"
-            :source-host="browserHost ?? undefined"
-            :source-repo="fetchRepo"
-            @select-hash="selectHash"
-          />
-          <GitListView
-            v-else
-            ref="listRef"
-            :containers="filteredContainers"
-            :commits="gitData.commits"
-            :selected-hash="selectedHash"
-            :diffstat="currentDiffstat"
-            @select-hash="selectHash"
-            @switch-to-graph="handleSwitchToGraph"
-            @switch-to-graph-sub="handleSwitchToGraphSub"
-          />
+      <!-- Body: main content fills all space; side panel overlays from the right -->
+      <div class="flex-1 relative overflow-hidden">
 
-          <!-- Diffstat popover (graph mode) -->
-          <div
-            v-if="mode === 'graph' && selectedHash && currentDiffstat"
-            class="mt-3 border border-slate-700 rounded bg-slate-800/80 p-3"
-          >
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-xs font-mono text-yellow-400">{{ selectedHash.slice(0, 8) }}</span>
-              <button @click="selectedHash = null" class="text-slate-500 hover:text-slate-300 text-xs">×</button>
+        <!-- Main content: graph fills full height, list scrolls with padding -->
+        <div class="w-full h-full">
+          <!-- Show loading/error only on initial load (no data yet); during refreshes keep graph mounted -->
+          <div v-if="loading && !gitData" class="p-4 text-xs text-slate-500 italic">Loading…</div>
+          <div v-else-if="error && !gitData" class="p-4 text-xs text-red-400">{{ error }}</div>
+          <template v-else-if="gitData">
+            <!-- Graph: manages its own scroll, fills full height, no outer overflow -->
+            <GitGraphView
+              v-if="mode === 'graph'"
+              ref="graphRef"
+              class="h-full"
+              :commits="gitData.commits"
+              :containers="filteredContainers"
+              :refs-per-host="filteredRefsPerHost"
+              :selected-hash="selectedHash"
+              :remote-url="gitData.remote_url ?? undefined"
+              :source-host="browserHost ?? undefined"
+              :source-repo="fetchRepo"
+              @select-hash="selectHash"
+              @open-session="sid => emit('open-history', sid)"
+            />
+            <!-- List: outer div scrolls, content has padding -->
+            <div v-else class="h-full overflow-auto p-4">
+              <GitListView
+                ref="listRef"
+                :containers="filteredContainers"
+                :commits="gitData.commits"
+                :selected-hash="selectedHash"
+                :diffstat="currentDiffstat"
+                @select-hash="selectHash"
+                @switch-to-graph="handleSwitchToGraph"
+                @switch-to-graph-sub="handleSwitchToGraphSub"
+                @open-session="sid => emit('open-history', sid)"
+              />
             </div>
-            <pre class="text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">{{ currentDiffstat }}</pre>
+          </template>
+          <div v-else class="p-4 text-xs text-slate-500 italic">No git data available.</div>
+        </div>
+
+        <!-- Commit detail panel: absolute overlay, right side, full height -->
+        <div
+          v-if="selectedHash"
+          class="absolute right-0 top-0 bottom-0 w-80 z-10 bg-slate-900 border-l border-slate-700 flex flex-col shadow-2xl"
+        >
+          <!-- Panel header -->
+          <div class="flex items-center justify-between px-3 py-2 border-b border-slate-700 shrink-0">
+            <span class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Commit</span>
+            <button
+              @click="selectedHash = null; currentDiffstat = ''; currentMessage = ''"
+              class="text-slate-400 hover:text-slate-200 text-lg leading-none px-1"
+              title="Close"
+            >×</button>
           </div>
-          <div v-else-if="mode === 'graph' && selectedHash && loadingDiffstat" class="mt-3 text-xs text-slate-500 italic">
-            Loading diff…
+
+          <!-- Panel body -->
+          <div class="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+            <!-- Hash (short display, copy full) -->
+            <div class="flex items-center gap-1.5">
+              <span class="font-mono text-yellow-400">{{ selectedHash?.slice(0, 8) }}</span>
+              <button
+                @click="copyToClipboard(selectedHash!)"
+                class="text-slate-500 hover:text-slate-300 transition-colors"
+                :title="selectedHash ?? ''"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" stroke="currentColor" fill="none"/>
+                  <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" fill="none"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Branch / ref badges -->
+            <div v-if="selectedCommitBadges.length" class="flex flex-wrap gap-1">
+              <span
+                v-for="b in selectedCommitBadges"
+                :key="b.text"
+                class="px-1.5 py-0.5 rounded font-mono"
+                :class="b.cls"
+              >{{ b.text }}</span>
+            </div>
+
+            <!-- Author + timestamp -->
+            <div v-if="selectedCommit?.author || selectedCommitDate" class="space-y-0.5">
+              <div v-if="selectedCommit?.author" class="text-slate-300">{{ selectedCommit.author }}</div>
+              <div v-if="selectedCommitDate" class="text-slate-500">{{ selectedCommitDate }}</div>
+            </div>
+
+            <!-- Subject (always available without API call) -->
+            <div v-if="selectedCommit?.subject" class="text-slate-200 font-semibold">{{ selectedCommit.subject }}</div>
+
+            <!-- Parent commits -->
+            <div v-if="selectedCommitParents.length" class="space-y-1 border-t border-slate-700/60 pt-2">
+              <div class="text-slate-500 text-xs uppercase tracking-wide">{{ selectedCommitParents.length > 1 ? 'Parents' : 'Parent' }}</div>
+              <div
+                v-for="p in selectedCommitParents"
+                :key="p.hash"
+                class="flex items-center gap-1.5 min-w-0"
+              >
+                <button
+                  @click="selectHash(p.hash)"
+                  class="font-mono text-yellow-500 hover:text-yellow-300 shrink-0 text-xs"
+                  :title="p.hash"
+                >{{ p.hash.slice(0, 8) }}</button>
+                <button
+                  @click.stop="copyToClipboard(p.hash)"
+                  class="text-slate-500 hover:text-slate-300 transition-colors shrink-0"
+                  :title="p.hash"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" stroke="currentColor" fill="none"/>
+                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" fill="none"/>
+                  </svg>
+                </button>
+                <span class="text-slate-400 truncate text-xs">{{ p.subject }}</span>
+              </div>
+            </div>
+
+            <!-- Full message + diffstat (fetched) -->
+            <div v-if="loadingDetail" class="text-slate-500 italic">Loading…</div>
+            <template v-else>
+              <pre
+                v-if="currentMessage && currentMessage.trim() !== selectedCommit?.subject?.trim()"
+                class="text-slate-300 whitespace-pre-wrap font-sans leading-relaxed"
+              >{{ currentMessage.trim() }}</pre>
+              <pre
+                v-if="currentDiffstat"
+                class="text-slate-400 font-mono whitespace-pre overflow-x-auto border-t border-slate-700/60 pt-2"
+              >{{ currentDiffstat.trim() }}</pre>
+            </template>
           </div>
-        </template>
-        <div v-else class="text-xs text-slate-500 italic">No git data available.</div>
+        </div>
+
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useGitView } from '../composables/useGitView'
-import { containerDirLabel } from '../composables/useGitGraph'
+import { containerDirLabel, formatRef } from '../composables/useGitGraph'
 import { useHostnameAliases } from '../composables/useHostnameAliases'
 import GitGraphView from './GitGraphView.vue'
 import GitListView from './GitListView.vue'
@@ -175,16 +264,20 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   'switch-repo': [repo: string, hash?: string | null]
+  'open-history': [sessionId: string]
 }>()
 
-const { data: gitData, loading, error, fetchGitView, fetchDiffstat } = useGitView()
+const { data: gitData, loading, error, fetchGitView, fetchCommitDetail } = useGitView()
 const mode = ref<'graph' | 'list'>('graph')
 const selectedHash = ref<string | null>(null)
 const currentDiffstat = ref('')
-const loadingDiffstat = ref(false)
+const currentMessage = ref('')
+const loadingDetail = ref(false)
 const selectedHost = ref<string | null>(null)
 const graphRef = ref<InstanceType<typeof GitGraphView> | null>(null)
 const listRef = ref<InstanceType<typeof GitListView> | null>(null)
+// Generation counter: incremented on each new load() call so stale concurrent loads bail out.
+let loadGen = 0
 
 // Merge props.allRepos with submodule source_repos discovered from gitData
 const effectiveAllRepos = computed(() => {
@@ -302,7 +395,57 @@ const filteredRefsPerHost = computed(() => {
 // The repo to actually fetch: in list mode, use the parent repo for submodules
 const fetchRepo = computed(() => isSubmoduleInListMode.value ? parentRepo.value : props.sourceRepo)
 
+// --- Commit detail side panel ---
+
+const selectedCommit = computed(() =>
+  selectedHash.value ? (gitData.value?.commits.find(c => c.hash === selectedHash.value) ?? null) : null
+)
+
+const selectedCommitDate = computed(() => {
+  const ts = selectedCommit.value?.author_date
+  return ts ? new Date(ts * 1000).toLocaleString() : ''
+})
+
+const selectedCommitParents = computed(() => {
+  const commit = selectedCommit.value
+  if (!commit || !commit.parents.length) return []
+  const commitMap = new Map((gitData.value?.commits ?? []).map((c: any) => [c.hash, c]))
+  return commit.parents.map((hash: string) => {
+    const parent = commitMap.get(hash)
+    return { hash, subject: parent?.subject ?? hash.slice(0, 8) }
+  })
+})
+
+interface RefBadge { text: string; cls: string }
+const selectedCommitBadges = computed((): RefBadge[] => {
+  const commit = selectedCommit.value
+  if (!commit) return []
+  const badges: RefBadge[] = []
+  // Per-host local branches
+  for (const { hash, host, localBranches } of filteredRefsPerHost.value) {
+    if (hash === commit.hash) {
+      for (const b of localBranches)
+        badges.push({ text: `${b}@${alias(host)}`, cls: 'bg-blue-900/60 text-blue-300' })
+    }
+  }
+  // HEAD / remote / tag refs from the commit object
+  for (const ref of commit.refs) {
+    const f = formatRef(ref)
+    const cls = f.type === 'head' ? 'bg-blue-700/60 text-blue-200'
+              : f.type === 'tag'  ? 'bg-amber-900/60 text-amber-300'
+              : f.type === 'local' ? 'bg-blue-900/60 text-blue-300'
+              : 'bg-slate-700/60 text-slate-300'
+    badges.push({ text: f.text, cls })
+  }
+  return badges
+})
+
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text).catch(() => {})
+}
+
 async function load() {
+  const myGen = ++loadGen
   // Send request to server to fetch fresh data from connected containers
   if (props.sendWs) {
     props.sendWs({
@@ -312,17 +455,22 @@ async function load() {
     })
   }
   await fetchGitView(fetchRepo.value)
+  // If a newer load() started while we were fetching, bail out — don't clobber its state.
+  if (myGen !== loadGen) return
   selectedHash.value = null
   currentDiffstat.value = ''
+  currentMessage.value = ''
   selectedHost.value = null
   // Apply navigation hash if provided (e.g. from switch-repo or openGitView).
   const hashToApply = props.initialHash
   if (hashToApply && gitData.value) {
     const fullHash = gitData.value.commits.find(cm => cm.hash.startsWith(hashToApply))?.hash ?? hashToApply
     await nextTick()
+    if (myGen !== loadGen) return
     await selectHash(fullHash)
     if (mode.value === 'graph') {
       await nextTick()
+      if (myGen !== loadGen) return
       graphRef.value?.scrollToHash(fullHash)
     }
   }
@@ -332,20 +480,32 @@ async function selectHash(hash: string) {
   if (selectedHash.value === hash) {
     selectedHash.value = null
     currentDiffstat.value = ''
+    currentMessage.value = ''
     return
   }
   selectedHash.value = hash
-  loadingDiffstat.value = true
-  currentDiffstat.value = await fetchDiffstat(fetchRepo.value, hash)
-  loadingDiffstat.value = false
+  loadingDetail.value = true
+  currentDiffstat.value = ''
+  currentMessage.value = ''
+  const detail = await fetchCommitDetail(fetchRepo.value, hash)
+  currentDiffstat.value = detail.diffstat
+  currentMessage.value = detail.message
+  loadingDetail.value = false
 }
 
 async function handleSwitchToGraph(hash: string) {
   if (isSubmoduleInListMode.value) {
-    // Commits in the list are from the parent repo (fetchRepo = parentRepo in submodule list mode).
-    // Switch back to the parent graph view so the hash can actually be found.
+    // Commits shown are from the parent repo (fetchRepo = parentRepo in submodule list mode).
+    // fetchRepo stays parentRepo after the mode switch (parent graph mode also uses parentRepo),
+    // so the fetchRepo watcher won't fire and load() won't run. Emit switch-repo to update
+    // App.vue state, then navigate directly since gitData already has the parent commits.
     mode.value = 'graph'
     emit('switch-repo', parentRepo.value, hash)
+    await nextTick()
+    const fullHash = gitData.value?.commits.find((cm: any) => cm.hash.startsWith(hash) || hash.startsWith(cm.hash))?.hash ?? hash
+    if (selectedHash.value !== fullHash) await selectHash(fullHash)
+    await nextTick()
+    graphRef.value?.scrollToHash(fullHash)
     return
   }
   mode.value = 'graph'
@@ -430,4 +590,9 @@ watch(() => props.gitRefreshSignal, (newVal, oldVal) => {
   }
 })
 
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') emit('close')
+}
+onMounted(() => window.addEventListener('keydown', onKey))
+onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>

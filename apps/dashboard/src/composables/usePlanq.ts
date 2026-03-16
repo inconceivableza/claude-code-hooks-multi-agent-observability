@@ -10,17 +10,18 @@ export function usePlanq() {
     createFile = false,
     commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none',
     planDisposition?: 'manual' | 'add-after' | 'add-end',
-    autoQueuePlan?: boolean
+    autoQueuePlan?: boolean,
+    parentTaskId?: number,
+    linkType?: 'follow-up' | 'fix-required' | 'check' | 'other'
   ): Promise<PlanqTask | null> {
     try {
       const res = await fetch(`${API_BASE}/planq/${encodeURIComponent(containerId)}/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_type: taskType, filename, description, create_file: createFile, commit_mode: commitMode, auto_commit: commitMode === 'auto', plan_disposition: planDisposition, auto_queue_plan: autoQueuePlan }),
+        body: JSON.stringify({ task_type: taskType, filename, description, create_file: createFile, commit_mode: commitMode, auto_commit: commitMode === 'auto', plan_disposition: planDisposition, auto_queue_plan: autoQueuePlan, parent_task_id: parentTaskId, link_type: linkType }),
       })
       if (!res.ok) return null
-      const data = await res.json()
-      return data.task ?? null
+      return await res.json() as PlanqTask
     } catch {
       return null
     }
@@ -29,7 +30,7 @@ export function usePlanq() {
   async function updateTask(
     containerId: string,
     taskId: number,
-    updates: { description?: string; status?: string; auto_commit?: boolean; commit_mode?: 'none' | 'auto' | 'stage' | 'manual' }
+    updates: { description?: string; status?: string; auto_commit?: boolean; commit_mode?: 'none' | 'auto' | 'stage' | 'manual'; review_status?: string }
   ): Promise<PlanqTask | null> {
     try {
       const res = await fetch(`${API_BASE}/planq/${encodeURIComponent(containerId)}/tasks/${taskId}`, {
@@ -38,8 +39,7 @@ export function usePlanq() {
         body: JSON.stringify(updates),
       })
       if (!res.ok) return null
-      const data = await res.json()
-      return data.task ?? null
+      return await res.json() as PlanqTask
     } catch {
       return null
     }
