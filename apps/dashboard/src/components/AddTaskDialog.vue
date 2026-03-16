@@ -49,6 +49,7 @@
               class="flex-1 text-sm bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-slate-400"
               :class="{ 'border-red-500': taskSlug && !isSlugValid }"
               placeholder="fix-login"
+              autocomplete="off"
               @input="onSlugInput"
             />
             <span class="text-xs text-slate-500 font-mono shrink-0">.md</span>
@@ -134,6 +135,7 @@
               type="text"
               class="flex-1 text-sm bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-slate-400"
               placeholder="001"
+              autocomplete="off"
             />
             <span class="text-xs text-slate-500 font-mono shrink-0">.md</span>
           </div>
@@ -160,6 +162,7 @@
               type="text"
               class="flex-1 text-sm bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-slate-400"
               placeholder="api-performance"
+              autocomplete="off"
             />
             <span class="text-xs text-slate-500 font-mono shrink-0">.md</span>
           </div>
@@ -184,6 +187,7 @@
             type="text"
             class="text-sm bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-slate-400"
             placeholder="npm test"
+            autocomplete="off"
           />
         </div>
       </template>
@@ -210,6 +214,7 @@
             type="text"
             class="text-sm bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-slate-400"
             placeholder="description=prompt"
+            autocomplete="off"
           />
         </div>
       </template>
@@ -222,6 +227,7 @@
           type="text"
           class="text-sm bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 focus:outline-none focus:border-slate-400"
           placeholder="What needs to be done manually?"
+          autocomplete="off"
         />
       </div>
 
@@ -340,12 +346,14 @@
             type="text"
             class="text-xs bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 font-mono w-32 shrink-0 focus:outline-none focus:border-slate-400"
             :placeholder="subtaskFilenamePlaceholder(sub.type)"
+            autocomplete="off"
           />
           <input
             v-model="sub.description"
             type="text"
             class="flex-1 text-xs bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 focus:outline-none focus:border-slate-400 min-w-0"
             placeholder="description"
+            autocomplete="off"
           />
           <button
             type="button"
