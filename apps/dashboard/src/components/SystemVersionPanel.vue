@@ -47,9 +47,9 @@
                 <td class="path" :title="c.workspace_host_path ?? c.id">{{ displayPath(c.workspace_host_path ?? c.id, c.machine_hostname) }}</td>
                 <td class="daemon-cell">
                   <span
-                    :class="daemonStampClass(c.versions)"
-                    :title="daemonStampTooltip(c.versions)"
-                    @click.stop="showTooltip($event, daemonStampTooltip(c.versions))"
+                    :class="daemonStampClass(c.versions, hostStamps(c.machine_hostname))"
+                    :title="daemonStampTooltip(c.versions, hostStamps(c.machine_hostname))"
+                    @click.stop="showTooltip($event, daemonStampTooltip(c.versions, hostStamps(c.machine_hostname)))"
                   >{{ daemonStampSymbol(c.versions) }}</span>
                   <button
                     v-if="daemonNeedsRestart(c.versions)"
@@ -60,16 +60,16 @@
                 </td>
                 <td>
                   <span
-                    :class="stampClass(c.versions?.planq_shell, serverStamps.planq_shell)"
-                    :title="stampTooltip(c.versions?.planq_shell, serverStamps.planq_shell, !serverStamps.devcontainer || isStale(c.versions?.devcontainer, serverStamps.devcontainer))"
-                    @click.stop="showTooltip($event, stampTooltip(c.versions?.planq_shell, serverStamps.planq_shell, !serverStamps.devcontainer || isStale(c.versions?.devcontainer, serverStamps.devcontainer)))"
+                    :class="stampClass(c.versions?.planq_shell, hostStamps(c.machine_hostname).planq_shell)"
+                    :title="stampTooltip(c.versions?.planq_shell, hostStamps(c.machine_hostname).planq_shell, !hostStamps(c.machine_hostname).devcontainer || isStale(c.versions?.devcontainer, hostStamps(c.machine_hostname).devcontainer))"
+                    @click.stop="showTooltip($event, stampTooltip(c.versions?.planq_shell, hostStamps(c.machine_hostname).planq_shell, !hostStamps(c.machine_hostname).devcontainer || isStale(c.versions?.devcontainer, hostStamps(c.machine_hostname).devcontainer)))"
                   >{{ stampSymbol(c.versions?.planq_shell) }}</span>
                 </td>
                 <td>
                   <span
-                    :class="stampClass(c.versions?.devcontainer, serverStamps.devcontainer)"
-                    :title="stampTooltip(c.versions?.devcontainer, serverStamps.devcontainer, true)"
-                    @click.stop="showTooltip($event, stampTooltip(c.versions?.devcontainer, serverStamps.devcontainer, true))"
+                    :class="stampClass(c.versions?.devcontainer, hostStamps(c.machine_hostname).devcontainer)"
+                    :title="stampTooltip(c.versions?.devcontainer, hostStamps(c.machine_hostname).devcontainer, true)"
+                    @click.stop="showTooltip($event, stampTooltip(c.versions?.devcontainer, hostStamps(c.machine_hostname).devcontainer, true))"
                   >{{ stampSymbol(c.versions?.devcontainer) }}</span>
                 </td>
               </tr>
@@ -157,6 +157,9 @@ interface HostReport {
   machine_hostname: string;
   sandbox_commit: string | null;
   observability_commit: string | null;
+  daemon_source_hash: string | null;
+  shell_source_hash: string | null;
+  devcontainer_source_hash: string | null;
   last_reported_at: number | null;
 }
 
@@ -214,6 +217,18 @@ async function refresh() {
 function stampSymbol(stamp: string | null | undefined): string {
   if (!stamp || stamp === '(no stamp)') return '\u2014';
   return '\u2713';
+}
+
+// Get per-host reference stamps by looking up the host's source report.
+// Falls back to server_stamps when the host has no reported source hashes.
+function hostStamps(hostname: string): ServerStamps {
+  const report = hostReports.value.find(h => h.machine_hostname === hostname);
+  if (!report) return serverStamps.value;
+  return {
+    planq_daemon: report.daemon_source_hash ? report.daemon_source_hash + ' host' : serverStamps.value.planq_daemon,
+    planq_shell: report.shell_source_hash ? report.shell_source_hash + ' host' : serverStamps.value.planq_shell,
+    devcontainer: report.devcontainer_source_hash ? report.devcontainer_source_hash + ' host' : serverStamps.value.devcontainer,
+  };
 }
 
 // Returns true if the container stamp is present but its hash differs from the server reference stamp.
@@ -290,17 +305,18 @@ function daemonStampSymbol(versions: Record<string, string | null> | null | unde
   return '\u2713';
 }
 
-function daemonStampClass(versions: Record<string, string | null> | null | undefined): string {
+function daemonStampClass(versions: Record<string, string | null> | null | undefined, refStamps?: ServerStamps): string {
   const fileStamp = versions?.planq_daemon;
   const runningHash = versions?.planq_daemon_running;
   if (!fileStamp || fileStamp === '(no stamp)') return 'stamp stamp-missing';
   const fileHash = stampHash(fileStamp);
   if (runningHash && fileHash && runningHash !== fileHash) return 'stamp stamp-restart';
-  if (isStale(fileStamp, serverStamps.value.planq_daemon)) return 'stamp stamp-stale';
+  const ref = refStamps ?? serverStamps.value;
+  if (isStale(fileStamp, ref.planq_daemon)) return 'stamp stamp-stale';
   return 'stamp stamp-ok';
 }
 
-function daemonStampTooltip(versions: Record<string, string | null> | null | undefined): string {
+function daemonStampTooltip(versions: Record<string, string | null> | null | undefined, refStamps?: ServerStamps): string {
   const fileStamp = versions?.planq_daemon;
   const runningHash = versions?.planq_daemon_running;
   if (!fileStamp || fileStamp === '(no stamp)') return 'Unknown status — no version stamp found';
@@ -313,11 +329,12 @@ function daemonStampTooltip(versions: Record<string, string | null> | null | und
       `stamped: ${ts ?? '?'}`,
     ].join('\n');
   }
-  if (isStale(fileStamp, serverStamps.value.planq_daemon)) {
-    const serverHash = stampHash(serverStamps.value.planq_daemon);
+  const ref = refStamps ?? serverStamps.value;
+  if (isStale(fileStamp, ref.planq_daemon)) {
+    const refHash = stampHash(ref.planq_daemon);
     // Treat devcontainer as stale when the server has no reference (null) — safe default.
-    const devcStale = !serverStamps.value.devcontainer
-      || isStale(versions?.devcontainer, serverStamps.value.devcontainer);
+    const devcStale = !ref.devcontainer
+      || isStale(versions?.devcontainer, ref.devcontainer);
     const advice = devcStale
       ? 'Update the devcontainer on the host first, then rebuild the container.'
       : 'Run: update-projects.sh apply-daemon';
@@ -325,7 +342,7 @@ function daemonStampTooltip(versions: Record<string, string | null> | null | und
       'Outdated — planq-daemon needs updating',
       advice,
       `installed: ${fileHash}`,
-      `current:   ${serverHash ?? '?'}`,
+      `current:   ${refHash ?? '?'}`,
       `stamped: ${ts ?? '?'}`,
     ].join('\n');
   }
@@ -342,10 +359,11 @@ function isStampProblem(stamp: string | null | undefined, serverStamp: string | 
 
 function isContainerStale(c: ContainerVersion): boolean {
   if (!c.versions) return false;
+  const ref = hostStamps(c.machine_hostname);
   return (
-    isStampProblem(c.versions.devcontainer, serverStamps.value.devcontainer) ||
-    isStale(c.versions.planq_daemon, serverStamps.value.planq_daemon) ||
-    isStale(c.versions.planq_shell, serverStamps.value.planq_shell)
+    isStampProblem(c.versions.devcontainer, ref.devcontainer) ||
+    isStale(c.versions.planq_daemon, ref.planq_daemon) ||
+    isStale(c.versions.planq_shell, ref.planq_shell)
   );
 }
 

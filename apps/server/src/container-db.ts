@@ -310,6 +310,18 @@ export function initContainerDatabase(): void {
   if (!commitColumns.includes('diffstat')) {
     db.exec('ALTER TABLE git_commits ADD COLUMN diffstat TEXT');
   }
+
+  // Migration for host_source_reports component source hashes
+  const hostColumns = (db.prepare('PRAGMA table_info(host_source_reports)').all() as any[]).map((r: any) => r.name);
+  if (!hostColumns.includes('daemon_source_hash')) {
+    db.exec('ALTER TABLE host_source_reports ADD COLUMN daemon_source_hash TEXT');
+  }
+  if (!hostColumns.includes('shell_source_hash')) {
+    db.exec('ALTER TABLE host_source_reports ADD COLUMN shell_source_hash TEXT');
+  }
+  if (!hostColumns.includes('devcontainer_source_hash')) {
+    db.exec('ALTER TABLE host_source_reports ADD COLUMN devcontainer_source_hash TEXT');
+  }
 }
 
 export function touchPlanqServerModified(containerId: string): void {
@@ -1015,24 +1027,33 @@ export interface HostSourceReport {
   sandbox_commit_ts: string | null;
   observability_commit: string | null;
   observability_commit_ts: string | null;
+  daemon_source_hash: string | null;
+  shell_source_hash: string | null;
+  devcontainer_source_hash: string | null;
   last_reported_at: number | null;
 }
 
 export function upsertHostSourceReport(data: HostSourceReport): void {
   db.prepare(`
     INSERT INTO host_source_reports
-      (machine_hostname, sandbox_dir, sandbox_commit, sandbox_commit_ts, observability_commit, observability_commit_ts, last_reported_at)
-    VALUES (?,?,?,?,?,?,?)
+      (machine_hostname, sandbox_dir, sandbox_commit, sandbox_commit_ts, observability_commit, observability_commit_ts,
+       daemon_source_hash, shell_source_hash, devcontainer_source_hash, last_reported_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(machine_hostname) DO UPDATE SET
       sandbox_dir=excluded.sandbox_dir,
       sandbox_commit=excluded.sandbox_commit,
       sandbox_commit_ts=excluded.sandbox_commit_ts,
       observability_commit=excluded.observability_commit,
       observability_commit_ts=excluded.observability_commit_ts,
+      daemon_source_hash=excluded.daemon_source_hash,
+      shell_source_hash=excluded.shell_source_hash,
+      devcontainer_source_hash=excluded.devcontainer_source_hash,
       last_reported_at=excluded.last_reported_at
   `).run(
     data.machine_hostname, data.sandbox_dir, data.sandbox_commit, data.sandbox_commit_ts,
-    data.observability_commit, data.observability_commit_ts, data.last_reported_at
+    data.observability_commit, data.observability_commit_ts,
+    data.daemon_source_hash ?? null, data.shell_source_hash ?? null, data.devcontainer_source_hash ?? null,
+    data.last_reported_at
   );
 }
 

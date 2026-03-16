@@ -1034,6 +1034,9 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
       sandbox_commit_ts: msg.sandbox_commit_ts ?? null,
       observability_commit: msg.observability_commit ?? null,
       observability_commit_ts: msg.observability_commit_ts ?? null,
+      daemon_source_hash: msg.daemon_source_hash ?? null,
+      shell_source_hash: msg.shell_source_hash ?? null,
+      devcontainer_source_hash: msg.devcontainer_source_hash ?? null,
       last_reported_at: Date.now(),
     });
     return;
