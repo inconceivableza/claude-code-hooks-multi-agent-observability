@@ -1,0 +1,24 @@
+# planq-settings — per-project planq configuration
+#
+# Copy to plans/planq-settings.txt in your project to enable project-level
+# defaults.  A global version can be placed at:
+#   ~/.local/devcontainer-sandbox/planq-settings
+# Per-project settings override the global ones.
+#
+# Manage via host-firewall-admin.sh (no sudo required):
+#   .devcontainer/host-firewall-admin.sh planq-settings --set DEFAULT_COMMIT_MODE auto-commit
+#   .devcontainer/host-firewall-admin.sh planq-settings --set DEFAULT_COMMIT_MODE auto-commit -g
+#   .devcontainer/host-firewall-admin.sh planq-settings --get DEFAULT_COMMIT_MODE
+
+# Default commit mode for new tasks.
+# Applied by planq.sh when creating tasks without an explicit --auto-commit /
+# --stage-commit / --manual-commit flag.
+# The dashboard AddTaskDialog pre-selects this option when opening.
+#
+# Values:
+#   none          — no commit action after a task (default when not set)
+#   auto-commit   — automatically commit after the task completes
+#   stage-commit  — stage changes and pause for manual commit
+#   manual-commit — remind to commit but take no automated action
+#
+#DEFAULT_COMMIT_MODE=none
