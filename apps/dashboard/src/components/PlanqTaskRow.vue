@@ -3,16 +3,16 @@
   <div
     class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-700/50 group"
     :class="{ 'opacity-50': task.status === 'done', 'opacity-40 grayscale': task.status === 'deferred' || dimmed, 'bg-yellow-900/20': task.status === 'underway', 'bg-cyan-900/20': task.status === 'auto-queue', 'bg-purple-900/20': task.status === 'awaiting-commit', 'bg-teal-900/20': task.status === 'awaiting-plan' }"
-    :draggable="!isChild"
-    @dragstart="!isChild && emit('dragstart', task.id)"
+    draggable="true"
+    @dragstart="emit('dragstart', task.id)"
     @dragenter.prevent
     @dragover.prevent
     @drop="emit('drop', task.id)"
   >
-    <!-- Drag handle (hidden for child tasks) / link type badge -->
+    <!-- Drag handle / link type badge -->
     <span v-if="!isChild" class="text-slate-600 cursor-grab text-xs select-none">⠿</span>
-    <span v-else-if="linkType === 'fix-required'" class="text-red-500 text-xs shrink-0" title="fix-required">🔧</span>
-    <span v-else-if="linkType === 'check'" class="text-blue-400 text-xs shrink-0" title="check">✓</span>
+    <span v-else-if="linkType === 'fix-required'" class="text-red-500 text-xs shrink-0 cursor-grab select-none" title="fix-required (drag to reorder)">🔧</span>
+    <span v-else-if="linkType === 'check'" class="text-blue-400 text-xs shrink-0 cursor-grab select-none" title="check (drag to reorder)">✓</span>
     <span v-else-if="linkType === 'other'" class="text-slate-400 text-xs shrink-0" title="other">·</span>
     <span v-else class="text-purple-400 text-xs shrink-0" title="follow-up">↳</span>
 

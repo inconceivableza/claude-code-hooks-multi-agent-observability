@@ -635,13 +635,23 @@ async function dropOn(targetId: number) {
     dragFrom.value = null
     return
   }
-  const tasks = [...props.tasks]
-  const fromIdx = tasks.findIndex(t => t.id === dragFrom.value)
-  const toIdx = tasks.findIndex(t => t.id === targetId)
+  const allTasks = [...props.tasks]
+  const fromTask = allTasks.find(t => t.id === dragFrom.value)
+  const toTask = allTasks.find(t => t.id === targetId)
+  if (!fromTask || !toTask) { dragFrom.value = null; return }
+
+  // Subtasks can only be reordered within the same parent
+  if (fromTask.parent_task_id !== toTask.parent_task_id) {
+    dragFrom.value = null
+    return
+  }
+
+  const fromIdx = allTasks.findIndex(t => t.id === dragFrom.value)
+  const toIdx = allTasks.findIndex(t => t.id === targetId)
   if (fromIdx < 0 || toIdx < 0) { dragFrom.value = null; return }
-  const [moved] = tasks.splice(fromIdx, 1)
-  tasks.splice(toIdx, 0, moved)
-  const reorder = tasks.map((t, i) => ({ id: t.id, position: i }))
+  const [moved] = allTasks.splice(fromIdx, 1)
+  allTasks.splice(toIdx, 0, moved)
+  const reorder = allTasks.map((t, i) => ({ id: t.id, position: i }))
   dragFrom.value = null
   await apiReorder(props.containerId, reorder)
   emit('tasks-changed')
