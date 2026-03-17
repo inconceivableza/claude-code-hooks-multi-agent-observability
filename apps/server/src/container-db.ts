@@ -510,13 +510,41 @@ export function parsePlanqOrder(text: string): PlanqItem[] {
     }
 
     // Detect depth prefix: optional leading "  " pairs followed by "- "
-    // Format: <status_prefix> <depth_prefix> <task_content>
-    // e.g. "# done: - task: foo.md" or "  - unnamed-task: desc"
+    // Two serialization formats exist in the wild:
+    //   New (status-first): "# done: - task: foo.md"      — status then depth in activeLine
+    //   Old (depth-first):  "- # done: task: foo.md"      — depth prefix before status (from
+    //                       planq.sh archive and old serializePlanqOrder)
+    // Both are handled: for the old format the first-pass status check above misses it (starts
+    // with "- "), so we re-check for status inside the depth-matched content.
     let depth = 0;
     const depthMatch = activeLine.match(/^((?:  )*)- (.*)/);
     if (depthMatch) {
       depth = depthMatch[1]!.length / 2 + 1;
       activeLine = depthMatch[2]!;
+      // Re-check status prefix inside depth content (handles depth-first format)
+      if (status === 'pending') {
+        if (activeLine.startsWith('# done:')) {
+          status = 'done';
+          activeLine = activeLine.slice('# done:'.length).trim();
+        } else if (activeLine.startsWith('# underway:')) {
+          status = 'underway';
+          activeLine = activeLine.slice('# underway:'.length).trim();
+        } else if (activeLine.startsWith('# auto-queue:')) {
+          status = 'auto-queue';
+          activeLine = activeLine.slice('# auto-queue:'.length).trim();
+        } else if (activeLine.startsWith('# awaiting-commit:')) {
+          status = 'awaiting-commit';
+          activeLine = activeLine.slice('# awaiting-commit:'.length).trim();
+        } else if (activeLine.startsWith('# awaiting-plan:')) {
+          status = 'awaiting-plan';
+          activeLine = activeLine.slice('# awaiting-plan:'.length).trim();
+        } else if (activeLine.startsWith('# deferred:')) {
+          status = 'deferred';
+          activeLine = activeLine.slice('# deferred:'.length).trim();
+        } else if (activeLine.startsWith('#')) {
+          continue; // comment inside depth block
+        }
+      }
     }
 
     const colonIdx = activeLine.indexOf(':');
@@ -847,6 +875,87 @@ export function getArchiveTasks(containerId: string): PlanqItem[] {
   const row = db.prepare('SELECT planq_history FROM containers WHERE id = ?').get(containerId) as any;
   if (!row?.planq_history) return [];
   return parsePlanqOrder(row.planq_history);
+}
+
+/** Serialize a PlanqItem back to a single history-file line (status-first, then depth prefix). */
+function serializeArchiveItemLine(item: PlanqItem): string {
+  let value = item.filename
+    ? `${item.task_type}: ${item.filename}`
+    : `${item.task_type}: ${item.description || ''}`;
+  if (item.commit_mode === 'auto' || item.auto_commit) value += ' +auto-commit';
+  else if (item.commit_mode === 'stage') value += ' +stage-commit';
+  else if (item.commit_mode === 'manual') value += ' +manual-commit';
+  const depth = item.depth ?? 0;
+  const depthPrefix = depth > 0 ? '  '.repeat(depth - 1) + '- ' : '';
+  let statusPrefix = '';
+  if (item.status === 'done') statusPrefix = '# done: ';
+  else if (item.status === 'underway') statusPrefix = '# underway: ';
+  else if (item.status === 'deferred') statusPrefix = '# deferred: ';
+  return statusPrefix + depthPrefix + value;
+}
+
+/**
+ * Unarchive a top-level task (and its subtasks) by its index in the archive item list.
+ * Removes the group from planq_history and re-inserts into planq_tasks as pending.
+ * Returns the restored PlanqItems and updated history content.
+ */
+export function unarchiveTask(containerId: string, historyIndex: number): {
+  ok: boolean;
+  restoredTasks: PlanqItem[];
+  historyContent: string;
+} {
+  const row = db.prepare('SELECT planq_history FROM containers WHERE id = ?').get(containerId) as any;
+  if (!row?.planq_history) return { ok: false, restoredTasks: [], historyContent: '' };
+
+  const items = parsePlanqOrder(row.planq_history);
+  if (historyIndex < 0 || historyIndex >= items.length) return { ok: false, restoredTasks: [], historyContent: '' };
+  if ((items[historyIndex]!.depth ?? 0) !== 0) return { ok: false, restoredTasks: [], historyContent: '' };
+
+  // Collect the top-level task and all immediately following subtasks
+  const toRestore: PlanqItem[] = [items[historyIndex]!];
+  let endIdx = historyIndex + 1;
+  while (endIdx < items.length && (items[endIdx]!.depth ?? 0) > 0) {
+    toRestore.push(items[endIdx]!);
+    endIdx++;
+  }
+
+  // Rebuild history without the restored group
+  const remaining = [...items.slice(0, historyIndex), ...items.slice(endIdx)];
+  const newHistory = remaining.length > 0
+    ? remaining.map(it => serializeArchiveItemLine(it)).join('\n') + '\n'
+    : '';
+  db.prepare('UPDATE containers SET planq_history = ? WHERE id = ?').run(newHistory || null, containerId);
+
+  // Re-insert into planq_tasks at end of queue as pending
+  const maxPosRow = db.prepare('SELECT MAX(position) as m FROM planq_tasks WHERE container_id = ?').get(containerId) as any;
+  let pos = ((maxPosRow?.m) ?? -1) + 1;
+
+  const insertStmt = db.prepare(
+    'INSERT INTO planq_tasks (container_id, task_type, filename, description, position, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  );
+
+  const inserted: Array<{ id: number; depth: number }> = [];
+  for (const t of toRestore) {
+    const result = insertStmt.run(
+      containerId, t.task_type, t.filename ?? null, t.description ?? null,
+      pos++, 'pending',
+      t.auto_commit ? 1 : 0, t.commit_mode ?? 'none',
+      t.plan_disposition ?? 'manual', t.auto_queue_plan ? 1 : 0,
+    );
+    inserted.push({ id: result.lastInsertRowid as number, depth: t.depth ?? 0 });
+  }
+
+  // Restore parent_task_id relationships
+  const stack: Array<{ depth: number; id: number }> = [];
+  for (const { id, depth } of inserted) {
+    while (stack.length > 0 && stack[stack.length - 1]!.depth >= depth) stack.pop();
+    if (depth > 0 && stack.length > 0) {
+      db.prepare('UPDATE planq_tasks SET parent_task_id = ? WHERE id = ?').run(stack[stack.length - 1]!.id, id);
+    }
+    stack.push({ depth, id });
+  }
+
+  return { ok: true, restoredTasks: toRestore, historyContent: newHistory };
 }
 
 /**

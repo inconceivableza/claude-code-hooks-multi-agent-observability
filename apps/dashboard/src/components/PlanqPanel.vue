@@ -240,6 +240,7 @@
               v-for="(item, i) in archiveTasks"
               :key="i"
               class="flex items-center gap-2 py-1 px-2 rounded text-xs opacity-60"
+              :style="item.depth ? { paddingLeft: `${(item.depth * 12) + 8}px` } : {}"
             >
               <span class="text-green-600">✓</span>
               <span
@@ -258,6 +259,12 @@
                 class="shrink-0 text-indigo-500 hover:text-indigo-300 text-xs"
                 title="View investigation feedback"
               >feedback</button>
+              <button
+                v-if="!item.depth"
+                @click="unarchiveTask(i)"
+                class="shrink-0 text-slate-500 hover:text-amber-400 text-xs ml-auto"
+                title="Restore to queue"
+              >↩</button>
             </div>
           </div>
         </div>
@@ -324,7 +331,7 @@ const emit = defineEmits<{
   'open-history': [sessionId: string]
 }>()
 
-const { addTask: apiAdd, updateTask: apiUpdate, deleteTask: apiDelete, reorderTasks: apiReorder, fetchArchive: apiFetchArchive, archiveTask: apiArchiveTask, archiveDone: apiArchiveDone, respondToAutoTest: apiRespondAutoTest, getSettings: apiGetSettings, updateSettings: apiUpdateSettings } = usePlanq()
+const { addTask: apiAdd, updateTask: apiUpdate, deleteTask: apiDelete, reorderTasks: apiReorder, fetchArchive: apiFetchArchive, archiveTask: apiArchiveTask, unarchiveTask: apiUnarchiveTask, archiveDone: apiArchiveDone, respondToAutoTest: apiRespondAutoTest, getSettings: apiGetSettings, updateSettings: apiUpdateSettings } = usePlanq()
 const { updatePlanqTaskOptimistic } = useContainers()
 const { clearCached } = useExpandedTasks()
 
@@ -636,6 +643,12 @@ async function archiveTask(id: number) {
   if (archiveOpen.value) {
     archiveTasks.value = await apiFetchArchive(props.containerId)
   }
+}
+
+async function unarchiveTask(historyIndex: number) {
+  await apiUnarchiveTask(props.containerId, historyIndex)
+  emit('tasks-changed')
+  archiveTasks.value = await apiFetchArchive(props.containerId)
 }
 
 async function archiveDone() {

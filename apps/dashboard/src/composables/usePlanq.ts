@@ -113,6 +113,19 @@ export function usePlanq() {
     }
   }
 
+  async function unarchiveTask(containerId: string, historyIndex: number): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/planq/${encodeURIComponent(containerId)}/archive/unarchive`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ history_index: historyIndex }),
+      })
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
   async function archiveTask(containerId: string, taskId: number): Promise<boolean> {
     try {
       const res = await fetch(`${API_BASE}/planq/${encodeURIComponent(containerId)}/tasks/${taskId}/archive`, {
@@ -173,6 +186,6 @@ export function usePlanq() {
     }
   }
 
-  return { addTask, updateTask, deleteTask, reorderTasks, readFile, writeFile, listPlansFiles, fetchArchive, archiveTask, archiveDone, respondToAutoTest, getSettings, updateSettings }
+  return { addTask, updateTask, deleteTask, reorderTasks, readFile, writeFile, listPlansFiles, fetchArchive, archiveTask, unarchiveTask, archiveDone, respondToAutoTest, getSettings, updateSettings }
 
 }

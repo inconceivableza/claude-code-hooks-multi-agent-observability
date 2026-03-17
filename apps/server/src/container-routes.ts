@@ -9,6 +9,7 @@ import {
   deleteContainer,
   mergeContainerSessions,
   getArchiveTasks,
+  unarchiveTask,
   getContainer,
   parsePlanqOrder,
   serializePlanqOrder,
@@ -1933,6 +1934,57 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const containerId = decodeURIComponent(pathname.split('/')[2]!);
     const tasks = getArchiveTasks(containerId);
     return json(tasks);
+  }
+
+  // POST /planq/:id/archive/unarchive
+  if (pathname.match(/^\/planq\/[^/]+\/archive\/unarchive$/) && method === 'POST') {
+    const containerId = decodeURIComponent(pathname.split('/')[2]!);
+    const container = getContainer(containerId);
+    if (!container) return err('Container not found', 404);
+
+    const body = await req.json() as any;
+    const { history_index } = body;
+    if (typeof history_index !== 'number') return err('history_index required', 400);
+
+    const result = unarchiveTask(containerId, history_index);
+    if (!result.ok) return err('Task not found or is a subtask', 404);
+    touchPlanqServerModified(containerId);
+
+    // Send add_task change requests to the container so planq-order.txt is updated.
+    // Subtasks carry parent_task_key pointing to their direct parent.
+    if (result.restoredTasks.length > 0) {
+      // Build parent key stack: for each item, track the nearest ancestor's task key.
+      const parentStack: Array<{ depth: number; key: string | null }> = [];
+      const addChanges: ChangeRequest[] = result.restoredTasks.map(t => {
+        const depth = t.depth ?? 0;
+        while (parentStack.length > 0 && parentStack[parentStack.length - 1]!.depth >= depth) {
+          parentStack.pop();
+        }
+        const parentKey = depth > 0 && parentStack.length > 0 ? parentStack[parentStack.length - 1]!.key : null;
+        parentStack.push({ depth, key: t.filename ?? t.description ?? null });
+        return {
+          id: crId(), type: 'add_task' as const, source: 'dashboard' as const,
+          timestamp: Date.now() / 1000,
+          task_key: t.filename ?? t.description ?? null,
+          payload: {
+            task_type: t.task_type,
+            filename: t.filename ?? null,
+            description: t.description ?? null,
+            status: 'pending',
+            commit_mode: t.commit_mode ?? 'none',
+            plan_disposition: t.plan_disposition ?? 'manual',
+            auto_queue_plan: t.auto_queue_plan ?? false,
+            parent_task_key: parentKey,
+          },
+        };
+      });
+      sendApplyChanges(containerId, addChanges);
+    }
+    if (containerWsMap.has(containerId)) {
+      await relayFileWrite(containerId, 'archive/planq-history.txt', result.historyContent).catch(() => {});
+    }
+    broadcastDashboard({ type: 'planq_update', data: { container_id: containerId, tasks: getPlanqTasks(containerId) } });
+    return json({ ok: true, restored: result.restoredTasks.length });
   }
 
   // POST /planq/:id/tasks
