@@ -2234,6 +2234,45 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     }
   }
 
+  // GET /planq/:id/settings — read planq settings (DEFAULT_COMMIT_MODE etc.)
+  if (pathname.match(/^\/planq\/[^/]+\/settings$/) && method === 'GET') {
+    const containerId = decodeURIComponent(pathname.split('/')[2]!);
+    let raw = '';
+    try {
+      raw = await relayFileRead(containerId, 'planq-settings.txt');
+    } catch {
+      // File may not exist yet — return empty settings
+    }
+    const settings: Record<string, string> = {};
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 1) continue;
+      settings[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+    }
+    return json(settings);
+  }
+
+  // PUT /planq/:id/settings — write planq settings
+  if (pathname.match(/^\/planq\/[^/]+\/settings$/) && method === 'PUT') {
+    const containerId = decodeURIComponent(pathname.split('/')[2]!);
+    if (!containerWsMap.has(containerId)) return err('Container offline', 503);
+    const body = await req.json() as Record<string, string>;
+    const lines = Object.entries(body)
+      .filter(([k]) => /^[A-Z0-9_]+$/.test(k))
+      .map(([k, v]) => `${k}=${v}`);
+    const content = lines.join('\n');
+    try {
+      await relayFileWrite(containerId, 'planq-settings.txt', content);
+      if (!plansFilesCache.has(containerId)) plansFilesCache.set(containerId, new Map());
+      plansFilesCache.get(containerId)!.set('planq-settings.txt', content);
+      return json({ ok: true });
+    } catch (e: any) {
+      return err(e.message || 'Settings write failed', 503);
+    }
+  }
+
   // GET /dashboard/system-versions
   if (pathname === '/dashboard/system-versions' && method === 'GET') {
     const containers = getAllContainers().map(c => ({

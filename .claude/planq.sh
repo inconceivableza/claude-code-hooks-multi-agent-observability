@@ -476,6 +476,25 @@ _wait_for_plan() {
 _AUTO_TEST_PENDING="$PLANS_DIR/auto-test-pending.json"
 _AUTO_TEST_RESPONSE="$PLANS_DIR/auto-test-response.txt"
 _AUTO_COMMIT_CONFIG="$PLANS_DIR/auto-commit-config.txt"
+_PLANQ_SETTINGS="$PLANS_DIR/planq-settings.txt"
+
+# Read a setting from global then per-project settings files.
+# Per-project ($PLANS_DIR/planq-settings.txt) overrides global
+# (~/.local/devcontainer-sandbox/planq-settings).
+_read_planq_setting() {
+    local key="$1"
+    local global_settings="${HOME}/.local/devcontainer-sandbox/planq-settings"
+    local value=""
+    if [ -f "$global_settings" ]; then
+        value="$(grep "^${key}=" "$global_settings" 2>/dev/null | head -1 | cut -d= -f2-)"
+    fi
+    if [ -f "$_PLANQ_SETTINGS" ]; then
+        local project_value
+        project_value="$(grep "^${key}=" "$_PLANQ_SETTINGS" 2>/dev/null | head -1 | cut -d= -f2-)"
+        [ -n "$project_value" ] && value="$project_value"
+    fi
+    printf '%s' "$value"
+}
 
 # Write an auto-test-pending record so the dashboard can prompt the user
 _write_auto_test_pending() {
@@ -1302,6 +1321,17 @@ cmd_create() {
             *) description="$1"; shift ;;
         esac
     done
+
+    # Apply default commit mode from settings if no explicit flag was given
+    if [ -z "$auto_commit" ] && [ -z "$stage_commit" ] && [ -z "$manual_commit" ]; then
+        local _default_commit_mode
+        _default_commit_mode="$(_read_planq_setting DEFAULT_COMMIT_MODE)"
+        case "$_default_commit_mode" in
+            auto-commit)   auto_commit="1" ;;
+            stage-commit)  stage_commit="1" ;;
+            manual-commit) manual_commit="1" ;;
+        esac
+    fi
 
     # Normalize filename: auto-prefix with type if bare, auto-append .md
     if [ -n "$filename" ]; then

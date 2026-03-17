@@ -186,6 +186,7 @@ def _write_status(state: str, detail: str = ''):
 ALLOWED_FILENAME = re.compile(
     r'^(?:planq-order(?:-[A-Za-z0-9._-]+)?\.txt'
     r'|auto-test-response\.txt'
+    r'|planq-settings\.txt'
     r'|archive/planq-history\.txt'
     r'|[A-Za-z0-9][A-Za-z0-9._-]*\.md)$'
 )

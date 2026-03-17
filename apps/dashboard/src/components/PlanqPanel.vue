@@ -187,7 +187,7 @@
       <div v-else class="text-xs text-slate-500 italic py-1">No tasks queued.</div>
 
       <!-- Add buttons -->
-      <div class="flex gap-2 mt-2 pt-2 border-t border-slate-700">
+      <div class="flex items-center gap-2 mt-2 pt-2 border-t border-slate-700 flex-wrap">
         <button
           @click="showAddDialog = true"
           class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300"
@@ -198,6 +198,29 @@
           class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-400"
           title="Move done tasks to archive"
         >Archive done</button>
+        <div class="flex items-center gap-1 ml-auto">
+          <span class="text-xs text-slate-600" title="Default commit mode for new tasks">after:</span>
+          <button
+            v-for="opt in [
+              { value: 'none', label: '—' },
+              { value: 'auto-commit', label: 'auto' },
+              { value: 'stage-commit', label: 'stage' },
+              { value: 'manual-commit', label: 'manual' },
+            ]"
+            :key="opt.value"
+            type="button"
+            :disabled="savingCommitMode"
+            @click="setDefaultCommitMode(opt.value as any)"
+            class="text-xs px-1.5 py-0.5 rounded border transition-colors disabled:opacity-50"
+            :class="defaultCommitMode === opt.value
+              ? opt.value === 'none' ? 'border-slate-500 bg-slate-600 text-slate-200'
+                : opt.value === 'auto-commit' ? 'border-green-600 bg-green-900/50 text-green-300'
+                : opt.value === 'stage-commit' ? 'border-blue-600 bg-blue-900/50 text-blue-300'
+                : 'border-orange-600 bg-orange-900/50 text-orange-300'
+              : 'border-slate-700 bg-transparent text-slate-500 hover:bg-slate-700'"
+            :title="`Default commit mode: ${opt.value}`"
+          >{{ opt.label }}</button>
+        </div>
       </div>
 
       <!-- Archive section -->
@@ -276,7 +299,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, watch } from 'vue'
+import { ref, computed, reactive, watch, onMounted } from 'vue'
 import { usePlanq } from '../composables/usePlanq'
 import { useContainers } from '../composables/useContainers'
 import { usePlanqPanelState } from '../composables/usePanelState'
@@ -301,7 +324,7 @@ const emit = defineEmits<{
   'open-history': [sessionId: string]
 }>()
 
-const { addTask: apiAdd, updateTask: apiUpdate, deleteTask: apiDelete, reorderTasks: apiReorder, fetchArchive: apiFetchArchive, archiveTask: apiArchiveTask, archiveDone: apiArchiveDone, respondToAutoTest: apiRespondAutoTest } = usePlanq()
+const { addTask: apiAdd, updateTask: apiUpdate, deleteTask: apiDelete, reorderTasks: apiReorder, fetchArchive: apiFetchArchive, archiveTask: apiArchiveTask, archiveDone: apiArchiveDone, respondToAutoTest: apiRespondAutoTest, getSettings: apiGetSettings, updateSettings: apiUpdateSettings } = usePlanq()
 const { updatePlanqTaskOptimistic } = useContainers()
 const { clearCached } = useExpandedTasks()
 
@@ -311,6 +334,25 @@ const addingSubtaskTo = ref<PlanqTask | null>(null)
 const editingFile = ref<PlanqTask | null>(null)
 const archiveViewingFile = ref<string | null>(null)
 const dragFrom = ref<number | null>(null)
+
+// Default commit mode setting
+const defaultCommitMode = ref<'none' | 'auto-commit' | 'stage-commit' | 'manual-commit'>('none')
+const savingCommitMode = ref(false)
+
+onMounted(async () => {
+  const settings = await apiGetSettings(props.containerId)
+  const v = settings['DEFAULT_COMMIT_MODE']
+  if (v === 'auto-commit' || v === 'stage-commit' || v === 'manual-commit') {
+    defaultCommitMode.value = v
+  }
+})
+
+async function setDefaultCommitMode(mode: 'none' | 'auto-commit' | 'stage-commit' | 'manual-commit') {
+  defaultCommitMode.value = mode
+  savingCommitMode.value = true
+  await apiUpdateSettings(props.containerId, { DEFAULT_COMMIT_MODE: mode })
+  savingCommitMode.value = false
+}
 
 // Archive
 const archiveOpen = ref(false)

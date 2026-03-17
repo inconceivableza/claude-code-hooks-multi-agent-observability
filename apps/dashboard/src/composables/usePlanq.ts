@@ -150,6 +150,29 @@ export function usePlanq() {
     }
   }
 
-  return { addTask, updateTask, deleteTask, reorderTasks, readFile, writeFile, listPlansFiles, fetchArchive, archiveTask, archiveDone, respondToAutoTest }
+  async function getSettings(containerId: string): Promise<Record<string, string>> {
+    try {
+      const res = await fetch(`${API_BASE}/planq/${encodeURIComponent(containerId)}/settings`)
+      if (!res.ok) return {}
+      return await res.json()
+    } catch {
+      return {}
+    }
+  }
+
+  async function updateSettings(containerId: string, settings: Record<string, string>): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/planq/${encodeURIComponent(containerId)}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      })
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  return { addTask, updateTask, deleteTask, reorderTasks, readFile, writeFile, listPlansFiles, fetchArchive, archiveTask, archiveDone, respondToAutoTest, getSettings, updateSettings }
 
 }

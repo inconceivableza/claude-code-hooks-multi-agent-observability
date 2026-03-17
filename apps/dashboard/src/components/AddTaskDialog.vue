@@ -400,7 +400,7 @@ const emit = defineEmits<{
   add: [taskType: string, filename: string | null, description: string | null, createFile: boolean, commitMode: 'none' | 'auto' | 'stage' | 'manual' | undefined, planDisposition?: 'manual' | 'add-after' | 'add-end', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[]]
 }>()
 
-const { readFile, listPlansFiles } = usePlanq()
+const { readFile, listPlansFiles, getSettings } = usePlanq()
 const { onConfirmKey } = useConfirmKey()
 const { containers } = useContainers()
 
@@ -558,7 +558,15 @@ const isExistingTaskFile = computed(() => !!taskFilename.value && plansFiles.val
 const isExistingPlanFile = computed(() => !!planFilename.value && plansFiles.value.includes(planFilename.value))
 
 onMounted(async () => {
-  plansFiles.value = await listPlansFiles(props.containerId)
+  const [files, settings] = await Promise.all([
+    listPlansFiles(props.containerId),
+    getSettings(props.containerId),
+  ])
+  plansFiles.value = files
+  const defaultMode = settings['DEFAULT_COMMIT_MODE']
+  if (defaultMode === 'auto-commit') commitMode.value = 'auto'
+  else if (defaultMode === 'stage-commit') commitMode.value = 'stage'
+  else if (defaultMode === 'manual-commit') commitMode.value = 'manual'
 })
 
 // Reset slug/preview when task type changes; preserve description and carry slug across file-based types.
