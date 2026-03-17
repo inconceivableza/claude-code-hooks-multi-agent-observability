@@ -415,9 +415,18 @@ function toggleReviewDropdown(e: Event) {
   e.stopPropagation()
   if (!showReviewDropdown.value && reviewBtnRef.value) {
     const rect = reviewBtnRef.value.getBoundingClientRect()
-    reviewDropdownStyle.value = {
-      top: `${rect.bottom + 2}px`,
-      left: `${rect.left}px`,
+    const estimatedHeight = REVIEW_STATUS_DEFS.length * 22 + 8
+    const spaceBelow = window.innerHeight - rect.bottom
+    if (spaceBelow < estimatedHeight && rect.top > estimatedHeight) {
+      reviewDropdownStyle.value = {
+        bottom: `${window.innerHeight - rect.top + 2}px`,
+        left: `${rect.left}px`,
+      }
+    } else {
+      reviewDropdownStyle.value = {
+        top: `${rect.bottom + 2}px`,
+        left: `${rect.left}px`,
+      }
     }
   }
   showReviewDropdown.value = !showReviewDropdown.value
