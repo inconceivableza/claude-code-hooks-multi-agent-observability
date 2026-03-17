@@ -1154,6 +1154,12 @@ def _task_key_from_line(line: str) -> str | None:
     if task_type not in valid_types:
         return None
     # Strip flags in the same order as parsePlanqOrder on the server
+    # Review status is the outermost suffix — strip first
+    for rs in ('retry-later', 'ready-for-merge', 'revert-scheduled', 'fix-scheduled',
+               'has-issues', 'follow-up', 'cancelled', 'testing', 'passed', 'merged', 'ready'):
+        if value.endswith(f' +{rs}'):
+            value = value[:-len(f' +{rs}')]
+            break
     for flag in (' +auto-queue-plan', ' +add-after', ' +add-end',
                  ' +auto-commit', ' +stage-commit', ' +manual-commit'):
         if value.endswith(flag):
@@ -1217,6 +1223,36 @@ def _apply_update_commit_mode(task_key: str, new_mode: str) -> None:
                 stripped = stripped.rstrip()
                 new_flag = flag_map.get(new_mode, '')
                 new_lines.append(status_prefix + stripped + new_flag + '\n')
+            else:
+                new_lines.append(line)
+        _write_planq_lines(new_lines)
+
+
+_REVIEW_STATUSES = frozenset({
+    'none', 'ready', 'testing', 'passed', 'has-issues', 'fix-scheduled',
+    'follow-up', 'revert-scheduled', 'ready-for-merge', 'merged', 'cancelled', 'retry-later',
+})
+
+
+def _apply_update_review_status(task_key: str, new_status: str) -> None:
+    """Set or remove the +<review-status> suffix on a planq-order line."""
+    if new_status not in _REVIEW_STATUSES:
+        return
+    with _planq_file_lock:
+        lines = _read_planq_lines()
+        new_lines = []
+        for line in lines:
+            if _task_key_from_line(line) == task_key:
+                stripped = line.strip()
+                # Remove existing review status suffix if present
+                for rs in ('retry-later', 'ready-for-merge', 'revert-scheduled', 'fix-scheduled',
+                           'has-issues', 'follow-up', 'cancelled', 'testing', 'passed', 'merged', 'ready'):
+                    if stripped.endswith(f' +{rs}'):
+                        stripped = stripped[:-len(f' +{rs}')]
+                        break
+                if new_status and new_status != 'none':
+                    stripped = stripped.rstrip() + f' +{new_status}'
+                new_lines.append(stripped + '\n')
             else:
                 new_lines.append(line)
         _write_planq_lines(new_lines)
@@ -1290,6 +1326,7 @@ def _apply_add_task(payload: dict) -> None:
     plan_disposition = payload.get('plan_disposition', 'manual')
     auto_queue_plan = payload.get('auto_queue_plan', False)
     parent_task_key = payload.get('parent_task_key')
+    review_status = payload.get('review_status', 'none')
 
     value = filename if filename else (description or '')
     if task_type == 'make-plan':
@@ -1305,6 +1342,8 @@ def _apply_add_task(payload: dict) -> None:
         value += ' +stage-commit'
     elif commit_mode == 'manual':
         value += ' +manual-commit'
+    if review_status and review_status != 'none' and review_status in _REVIEW_STATUSES:
+        value += f' +{review_status}'
 
     status_prefix = _STATUS_PREFIX_MAP.get(status, '')
 
@@ -1369,6 +1408,8 @@ def _apply_changes(ws, changes: list) -> None:
                     _apply_update_commit_mode(task_key, value)
                 elif field == 'description':
                     _apply_update_description(task_key, value)
+                elif field == 'review_status':
+                    _apply_update_review_status(task_key, value)
             elif ctype == 'delete_task' and task_key:
                 _apply_delete_task(task_key)
             elif ctype == 'reorder':

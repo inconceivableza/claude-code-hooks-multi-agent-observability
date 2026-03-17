@@ -49,6 +49,7 @@ export interface PlanqItem {
   status: 'pending' | 'done' | 'underway' | 'auto-queue' | 'awaiting-commit' | 'awaiting-plan' | 'deferred'
   auto_commit: boolean
   commit_mode: 'none' | 'auto' | 'stage' | 'manual'
+  review_status?: string
   depth?: number
 }
 

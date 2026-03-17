@@ -2104,6 +2104,8 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
       containerChanges.push({ id: crId(), type: 'update_content', source: 'dashboard', timestamp: Date.now() / 1000, task_key, payload: { field: 'commit_mode', value: task.commit_mode } });
     if (body.description !== undefined)
       containerChanges.push({ id: crId(), type: 'update_content', source: 'dashboard', timestamp: Date.now() / 1000, task_key, payload: { field: 'description', value: body.description } });
+    if (body.review_status !== undefined)
+      containerChanges.push({ id: crId(), type: 'update_content', source: 'dashboard', timestamp: Date.now() / 1000, task_key, payload: { field: 'review_status', value: body.review_status } });
     sendApplyChanges(containerId, containerChanges);
 
     broadcastDashboard({ type: 'planq_update', data: { container_id: containerId, tasks: getPlanqTasks(containerId) } });

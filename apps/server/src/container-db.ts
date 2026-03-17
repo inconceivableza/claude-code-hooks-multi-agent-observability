@@ -67,6 +67,7 @@ export interface PlanqItem {
   commit_mode: 'none' | 'auto' | 'stage' | 'manual';
   plan_disposition?: 'manual' | 'add-after' | 'add-end';
   auto_queue_plan?: boolean;
+  review_status?: string;
   depth?: number;  // 0 = top-level, 1 = direct subtask, etc.
 }
 
@@ -555,6 +556,17 @@ export function parsePlanqOrder(text: string): PlanqItem[] {
     const validTypes = ['task', 'plan', 'make-plan', 'investigate', 'manual-test', 'manual-commit', 'manual-task', 'unnamed-task', 'auto-test', 'auto-commit', 'agent-test'];
     if (!validTypes.includes(taskType)) continue;
 
+    // Parse review status suffix (outermost flag — strip first)
+    let review_status: string | undefined;
+    const reviewStatuses = ['retry-later', 'ready-for-merge', 'revert-scheduled', 'fix-scheduled', 'has-issues', 'follow-up', 'cancelled', 'testing', 'passed', 'merged', 'ready'];
+    for (const rs of reviewStatuses) {
+      if (value.endsWith(` +${rs}`)) {
+        review_status = rs;
+        value = value.slice(0, -(` +${rs}`.length));
+        break;
+      }
+    }
+
     // Parse plan disposition flags (for make-plan tasks)
     let plan_disposition: PlanqItem['plan_disposition'] = 'manual';
     let auto_queue_plan = false;
@@ -586,9 +598,9 @@ export function parsePlanqOrder(text: string): PlanqItem[] {
     }
 
     if (taskType === 'task' || taskType === 'plan' || taskType === 'make-plan') {
-      items.push({ task_type: taskType, filename: value, description: null, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan, depth });
+      items.push({ task_type: taskType, filename: value, description: null, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan, review_status, depth });
     } else {
-      items.push({ task_type: taskType, filename: null, description: value, status, auto_commit, commit_mode, depth });
+      items.push({ task_type: taskType, filename: null, description: value, status, auto_commit, commit_mode, review_status, depth });
     }
   }
   return items;
@@ -619,6 +631,7 @@ export function serializePlanqOrder(tasks: PlanqTaskRow[]): string {
       else if (t.plan_disposition === 'add-end') value += ' +add-end';
       if (t.auto_queue_plan) value += ' +auto-queue-plan';
     }
+    if (t.review_status && t.review_status !== 'none') value += ` +${t.review_status}`;
     if (t.status === 'done') value = `# done: ${value}`;
     else if (t.status === 'underway') value = `# underway: ${value}`;
     else if (t.status === 'auto-queue') value = `# auto-queue: ${value}`;
@@ -647,11 +660,11 @@ export function syncPlanqTasksFromParsed(containerId: string, items: PlanqItem[]
   }
 
   const insertStmt = db.prepare(`
-    INSERT INTO planq_tasks (container_id, task_type, filename, description, position, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO planq_tasks (container_id, task_type, filename, description, position, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan, review_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
-    UPDATE planq_tasks SET task_type = ?, filename = ?, description = ?, position = ?, status = ?, auto_commit = ?, commit_mode = ?, plan_disposition = ?, auto_queue_plan = ?
+    UPDATE planq_tasks SET task_type = ?, filename = ?, description = ?, position = ?, status = ?, auto_commit = ?, commit_mode = ?, plan_disposition = ?, auto_queue_plan = ?, review_status = ?
     WHERE id = ?
   `);
 
@@ -661,6 +674,7 @@ export function syncPlanqTasksFromParsed(containerId: string, items: PlanqItem[]
     const existingRow = key ? existingByKey.get(key) : undefined;
     const effectiveMode = (item.commit_mode && item.commit_mode !== 'none') ? item.commit_mode : (item.auto_commit ? 'auto' : 'none');
 
+    const reviewStatus = item.review_status ?? 'none';
     if (existingRow) {
       // Update in place — preserve ID so frontend component state survives
       updateStmt.run(
@@ -673,6 +687,7 @@ export function syncPlanqTasksFromParsed(containerId: string, items: PlanqItem[]
         effectiveMode,
         item.plan_disposition ?? 'manual',
         item.auto_queue_plan ? 1 : 0,
+        reviewStatus,
         existingRow.id,
       );
       seenIds.add(existingRow.id);
@@ -688,6 +703,7 @@ export function syncPlanqTasksFromParsed(containerId: string, items: PlanqItem[]
         effectiveMode,
         item.plan_disposition ?? 'manual',
         item.auto_queue_plan ? 1 : 0,
+        reviewStatus,
       );
       seenIds.add(result.lastInsertRowid as number);
     }
@@ -885,6 +901,7 @@ function serializeArchiveItemLine(item: PlanqItem): string {
   if (item.commit_mode === 'auto' || item.auto_commit) value += ' +auto-commit';
   else if (item.commit_mode === 'stage') value += ' +stage-commit';
   else if (item.commit_mode === 'manual') value += ' +manual-commit';
+  if (item.review_status && item.review_status !== 'none') value += ` +${item.review_status}`;
   const depth = item.depth ?? 0;
   const depthPrefix = depth > 0 ? '  '.repeat(depth - 1) + '- ' : '';
   let statusPrefix = '';
