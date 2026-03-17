@@ -1619,10 +1619,10 @@ _run_task_inline() {
                 _notify_daemon
                 return 1
             fi
-            _invoke_claude "$(cat "$task_file")"
+            _invoke_claude "$(cat "$task_file") When you are done, write a brief summary of what you accomplished to plans/feedback-${task_value}."
             ;;
         plan)
-            _invoke_claude "Read plans/$task_value and implement the plan described in it."
+            _invoke_claude "Read plans/$task_value and implement the plan described in it. When done, write a brief summary of what you implemented to plans/feedback-${task_value}."
             ;;
         make-plan)
             local prompt_file="$PLANS_DIR/$task_value"
@@ -1635,7 +1635,7 @@ _run_task_inline() {
             local prompt target_plan
             prompt="$(cat "$prompt_file")"
             target_plan="${task_value/#make-plan-/plan-}"
-            _invoke_claude "${prompt} Write the plan to plans/${target_plan}."
+            _invoke_claude "${prompt} Write the plan to plans/${target_plan}. When done, write a brief summary of the plan you created to plans/feedback-${task_value}."
             if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
                 _mark_done "$line_num" "$task_line"
                 local new_plan_task="plan: ${target_plan}"
