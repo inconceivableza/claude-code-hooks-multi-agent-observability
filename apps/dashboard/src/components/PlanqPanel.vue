@@ -515,7 +515,7 @@ const reviewFilterVisible = computed(() =>
 
 const STATUS_FILTER_DEFS = [
   { status: 'pending',         icon: '▶',  label: 'Pending',         activeClass: 'bg-slate-700 text-slate-300' },
-  { status: 'underway',        icon: '⚡', label: 'Underway',        activeClass: 'bg-amber-900/60 text-amber-300' },
+  { status: 'underway',        icon: '⏳', label: 'Underway',        activeClass: 'bg-amber-900/60 text-amber-300' },
   { status: 'auto-queue',      icon: '⏱',  label: 'Auto-queued',     activeClass: 'bg-cyan-900/60 text-cyan-300' },
   { status: 'awaiting-commit', icon: '💾', label: 'Awaiting commit', activeClass: 'bg-purple-900/60 text-purple-300' },
   { status: 'awaiting-plan',   icon: '📋', label: 'Awaiting plan',   activeClass: 'bg-teal-900/60 text-teal-300' },
