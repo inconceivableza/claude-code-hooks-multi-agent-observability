@@ -1380,8 +1380,11 @@ function buildContainerWithState(container: ContainerRow): ContainerWithState {
   }
 
   const planq_tasks = getPlanqTasks(container.id);
+  const plans_files_list = plansFilesCache.has(container.id)
+    ? Array.from(plansFilesCache.get(container.id)!.keys())
+    : undefined;
 
-  return { ...container, sessions, status, planq_tasks };
+  return { ...container, sessions, status, planq_tasks, plans_files_list };
 }
 
 function deriveSessionStates(sourceRepo: string, sessionIds: string[]): SessionState[] {

@@ -253,6 +253,7 @@
       :connected="container.connected"
       :auto-test-pending="container.auto_test_pending ?? null"
       :initial-review-filter="initialReviewFilter"
+      :plans-files-list="container.plans_files_list"
       @tasks-changed="emit('tasks-changed')"
       @open-history="sid => emit('open-history', container.id, sid)"
     />

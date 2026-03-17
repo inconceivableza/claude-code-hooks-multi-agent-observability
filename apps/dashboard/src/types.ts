@@ -83,6 +83,7 @@ export interface ContainerWithState {
   auto_test_pending: AutoTestPending | null
   review_state?: string | null
   test_results?: string | null
+  plans_files_list?: string[]
 }
 
 export interface GitCommit {

@@ -40,9 +40,9 @@
         :title="isOpen(taskKey) ? 'Hide description' : 'Show description'"
       >{{ effectiveFilename }}</button>
       <span v-else class="truncate min-w-0">{{ task.description }}</span>
-      <!-- Feedback toggle: visible for investigate, task, plan, make-plan types -->
+      <!-- Feedback toggle: only shown when the feedback file actually exists -->
       <button
-        v-if="derivedFeedbackFilename"
+        v-if="feedbackFileExists"
         @click.stop="toggleFeedbackOpen"
         class="shrink-0 text-xs px-1"
         :class="isFeedbackOpen(taskKey) ? 'text-indigo-300 hover:text-indigo-200' : 'text-slate-500 hover:text-slate-300'"
@@ -261,6 +261,7 @@ const props = defineProps<{
   isChild?: boolean
   linkType?: 'follow-up' | 'fix-required' | 'check' | 'other' | null
   dimmed?: boolean
+  plansFilesList?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -377,6 +378,13 @@ const derivedFeedbackFilename = computed(() => {
     return `feedback-${fn}`
   }
   return null
+})
+
+const feedbackFileExists = computed(() => {
+  const fn = derivedFeedbackFilename.value
+  if (!fn) return false
+  if (!props.plansFilesList) return true  // unknown — show toggle optimistically
+  return props.plansFilesList.includes(fn)
 })
 
 async function toggleFeedbackOpen() {

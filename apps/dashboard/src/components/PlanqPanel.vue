@@ -144,6 +144,7 @@
             :container-id="containerId"
             :all-tasks="tasks"
             :dimmed="dimmed"
+            :plans-files-list="props.plansFilesList"
             @edit-file="editingFile = task"
             @set-status="(t, s) => setStatus(t, s)"
             @delete="deleteTask(task.id)"
@@ -166,6 +167,7 @@
               :all-tasks="tasks"
               :is-child="true"
               :link-type="child.link_type"
+              :plans-files-list="props.plansFilesList"
               @edit-file="editingFile = child"
               @set-status="(t, s) => setStatus(t, s)"
               @delete="deleteTask(child.id)"
@@ -291,6 +293,7 @@ const props = defineProps<{
   connected: boolean
   autoTestPending?: AutoTestPending | null
   initialReviewFilter?: string
+  plansFilesList?: string[]
 }>()
 
 const emit = defineEmits<{
