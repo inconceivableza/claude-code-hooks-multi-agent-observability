@@ -260,11 +260,7 @@ _find_task_by_number() {
 # Outputs: line_number TAB task_line  for a task identified by number, filename, or text
 _find_task_by_identifier() {
     local ident="$1"
-    if [[ "$ident" =~ ^[0-9]+$ ]]; then
-        _find_task_by_number "$ident"
-        return
-    fi
-    if [[ "$ident" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+    if [[ "$ident" =~ ^[0-9]+$ ]] || [[ "$ident" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
         _find_task_by_dotted_number "$ident"
         return
     fi
@@ -807,7 +803,7 @@ cmd_run() {
 
     local next
     if [ -n "$task_num" ]; then
-        next="$(_find_task_by_number "$task_num")"
+        next="$(_find_task_by_identifier "$task_num")"
         if [ -z "$next" ]; then
             echo "No task #$task_num in $PLANQ_FILE" >&2; return 1
         fi
