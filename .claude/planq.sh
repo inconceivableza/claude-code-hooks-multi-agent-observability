@@ -661,6 +661,46 @@ _find_archive_by_identifier() {
 
 # Archive one task: read original line (with status prefix) from planq, store in history,
 # move file if applicable, then remove from planq
+# Outputs line_num TAB task_content for each subtask line of the task at parent_line_num.
+# Subtasks are all lines after the parent whose depth > parent depth, until a shallower line.
+_get_subtasks() {
+    local parent_line_num="$1"
+    [ ! -f "$PLANQ_FILE" ] && return
+    local parent_raw depth
+    parent_raw="$(awk -v n="$parent_line_num" 'NR == n { print; exit }' "$PLANQ_FILE")"
+    local parent_trimmed="${parent_raw#"${parent_raw%%[![:space:]]*}"}"
+    local parent_content
+    if   [[ "$parent_trimmed" == "# done: "* ]];          then parent_content="${parent_trimmed#"# done: "}"
+    elif [[ "$parent_trimmed" == "# underway: "* ]];      then parent_content="${parent_trimmed#"# underway: "}"
+    elif [[ "$parent_trimmed" == "# auto-queue: "* ]];    then parent_content="${parent_trimmed#"# auto-queue: "}"
+    elif [[ "$parent_trimmed" == "# awaiting-commit: "* ]]; then parent_content="${parent_trimmed#"# awaiting-commit: "}"
+    elif [[ "$parent_trimmed" == "# deferred: "* ]];      then parent_content="${parent_trimmed#"# deferred: "}"
+    else parent_content="$parent_trimmed"
+    fi
+    _content_depth_step "$parent_content"
+    local parent_depth=$depth
+    local n=0
+    while IFS= read -r line; do
+        n=$((n + 1))
+        [ "$n" -le "$parent_line_num" ] && continue
+        [ -z "$line" ] && continue
+        local trimmed="${line#"${line%%[![:space:]]*}"}"
+        [ -z "$trimmed" ] && continue
+        local content
+        if   [[ "$trimmed" == "# done: "* ]];          then content="${trimmed#"# done: "}"
+        elif [[ "$trimmed" == "# underway: "* ]];      then content="${trimmed#"# underway: "}"
+        elif [[ "$trimmed" == "# auto-queue: "* ]];    then content="${trimmed#"# auto-queue: "}"
+        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
+        elif [[ "$trimmed" == "# deferred: "* ]];      then content="${trimmed#"# deferred: "}"
+        elif [[ "$trimmed" == "#"* ]];                  then continue
+        else content="$trimmed"
+        fi
+        _content_depth_step "$content"
+        [ "$depth" -le "$parent_depth" ] && break
+        printf '%d\t%s\n' "$n" "$content"
+    done < "$PLANQ_FILE"
+}
+
 _archive_one_task() {
     local line_num="$1" task_line="$2"
     local task_type task_value task_auto_commit
@@ -1859,7 +1899,16 @@ cmd_archive() {
                 echo "No matching task '$ident' in planq" >&2
                 continue
             fi
+            local line_num task_line depth
+            line_num="${next%%	*}"
+            task_line="${next#*	}"
+            _content_depth_step "$task_line"
+            if [ "$depth" -gt 0 ]; then
+                echo "Error: '$task_line' is a subtask — archive its parent task instead" >&2
+                continue
+            fi
             printf '%s\n' "$next" >> "$tmp_tasks"
+            _get_subtasks "$line_num" >> "$tmp_tasks"
         done
     else
         local tmp_tasks
@@ -1871,7 +1920,13 @@ cmd_archive() {
             [ -z "$trimmed" ] && continue
             if [[ "$trimmed" == "# done:"* ]]; then
                 local task_line="${trimmed#"# done: "}"
-                printf '%d\t%s\n' "$n" "$task_line" >> "$tmp_tasks"
+                local depth
+                _content_depth_step "$task_line"
+                # Only collect top-level done tasks; subtasks are added by _get_subtasks
+                if [ "$depth" -eq 0 ]; then
+                    printf '%d\t%s\n' "$n" "$task_line" >> "$tmp_tasks"
+                    _get_subtasks "$n" >> "$tmp_tasks"
+                fi
             fi
         done < "$PLANQ_FILE"
     fi
