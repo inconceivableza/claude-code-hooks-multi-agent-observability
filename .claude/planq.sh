@@ -330,6 +330,29 @@ _mark_inactive() {
     mv "$tmp" "$PLANQ_FILE"
 }
 
+# Set or clear the commit flag (+auto-commit / +stage-commit / +manual-commit) on a task line.
+# flag: "auto-commit" | "stage-commit" | "manual-commit" | "none" (clears)
+_set_commit_flag() {
+    local line_num="$1" flag="$2"
+    # Read the raw line, preserve any status prefix, strip old commit flags, append new one
+    local raw_line
+    raw_line=$(sed -n "${line_num}p" "$PLANQ_FILE")
+    # Strip existing commit flags from the raw line
+    local new_line
+    new_line="${raw_line/ +auto-commit/}"
+    new_line="${new_line/ +stage-commit/}"
+    new_line="${new_line/ +manual-commit/}"
+    if [ "$flag" != "none" ]; then
+        new_line="${new_line} +${flag}"
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    awk -v n="$line_num" -v newline="$new_line" \
+        'NR == n { print newline; next } { print }' \
+        "$PLANQ_FILE" > "$tmp"
+    mv "$tmp" "$PLANQ_FILE"
+}
+
 _mark_auto_queue() {
     local line_num="$1" original_line="$2"
     local tmp
@@ -1462,7 +1485,11 @@ cmd_mark() {
         awaiting-commit|ac)      state=awaiting-commit ;;
         awaiting-plan|ap)        state=awaiting-plan ;;
         deferred|df)             state=deferred ;;
-        *) echo "Error: state must be done/d, underway/u, inactive/i, queue/q, awaiting-commit/ac, awaiting-plan/ap, or deferred/df; got: $state" >&2; return 1 ;;
+        auto-commit|+ac)         state=auto-commit ;;
+        stage-commit|+sc)        state=stage-commit ;;
+        manual-commit|+mc)       state=manual-commit ;;
+        no-commit|+nc)           state=no-commit ;;
+        *) echo "Error: state must be done/d, underway/u, inactive/i, queue/q, awaiting-commit/ac, awaiting-plan/ap, deferred/df, auto-commit, stage-commit, manual-commit, or no-commit; got: $state" >&2; return 1 ;;
     esac
     local next
     next="$(_find_task_by_identifier "$ident")"
@@ -1524,6 +1551,10 @@ cmd_mark() {
         awaiting-commit)  _mark_awaiting_commit "$line_num" "$task_line"; echo "Marked as awaiting-commit." ;;
         awaiting-plan)    _mark_awaiting_plan   "$line_num" "$task_line"; echo "Marked as awaiting-plan." ;;
         deferred)         _mark_deferred        "$line_num" "$task_line"; echo "Marked as deferred." ;;
+        auto-commit)      _set_commit_flag "$line_num" "auto-commit";  echo "Marked auto-commit." ;;
+        stage-commit)     _set_commit_flag "$line_num" "stage-commit"; echo "Marked stage-commit." ;;
+        manual-commit)    _set_commit_flag "$line_num" "manual-commit"; echo "Marked manual-commit." ;;
+        no-commit)        _set_commit_flag "$line_num" "none";         echo "Cleared commit flag." ;;
     esac
     _notify_daemon
 }
@@ -2131,15 +2162,25 @@ usage_create() {
     echo "    planq create -p 3 -l other 'Related cleanup'  # other relationship"
 }
 usage_mark()   {
-    echo "Usage: planq mark <done|d|underway|u|inactive|i|queue|q|awaiting-commit|ac|awaiting-plan|ap|deferred|df> <N|filename|text>"
+    echo "Usage: planq mark <state> <N|filename|text>"
     echo "       planq mark:<state> <N|filename|text>"
-    echo "  Mark a task with a status."
+    echo "  Mark a task with a status or commit flag."
     echo "  Identify the task by number, by its filename (for task/plan/make-plan), or by its exact description text (for unnamed-task etc.)."
-    echo "  inactive/i    restores a done/underway/auto-queue/awaiting-commit task to pending."
-    echo "  awaiting-commit/ac  marks a task as waiting for user to commit staged changes."
-    echo "  awaiting-plan/ap    marks a make-plan task as waiting for plan review."
-    echo "  queue/q       marks a task for automatic execution by 'planq auto'."
-    echo "  deferred/df   moves a task to the bottom of the list (skip for now)."
+    echo ""
+    echo "  Status states:"
+    echo "  done/d              mark task done"
+    echo "  underway/u          mark task in-progress"
+    echo "  inactive/i          restore done/underway/auto-queue/awaiting-commit task to pending"
+    echo "  queue/q             mark for automatic execution by 'planq auto'"
+    echo "  awaiting-commit/ac  mark as waiting for user to commit staged changes"
+    echo "  awaiting-plan/ap    mark make-plan task as waiting for plan review"
+    echo "  deferred/df         move task to the bottom of the list (skip for now)"
+    echo ""
+    echo "  Commit flags (modifies the +commit tag on the task line):"
+    echo "  auto-commit (+ac)   Claude commits automatically after task completes"
+    echo "  stage-commit (+sc)  Claude stages changes; task pauses for user to commit"
+    echo "  manual-commit (+mc) task pauses at awaiting-commit (user stages/commits manually)"
+    echo "  no-commit (+nc)     clear any commit flag"
 }
 usage_auto()   {
     echo "Usage: planq auto"
@@ -2171,7 +2212,7 @@ usage() {
   do        / do [-t <type>] [-f <file>] [-p <parent>] [<desc>]  Create a task and immediately run it"
     echo "  follow-up / fu <parent> [opts] [<desc>]  Create follow-up subtask + mark underway"
     echo "  fixup     / fx <parent> [opts] [<desc>]  Create fix-required subtask + mark underway"
-    echo "  mark    / m <done|underway|inactive|queue|ac|ap|deferred> <N|…>  Mark a task (also: mark:<state> / m:<state>)"
+    echo "  mark    / m <done|underway|inactive|queue|ac|ap|deferred|auto-commit|stage-commit|manual-commit|no-commit> <N|…>  Mark a task (also: mark:<state>)"
     echo "  delete  / x <N>                                Delete task #N"
     echo "  archive / a [N|…] [--unarchive|-U <N|…>]      Archive done tasks; -a flag on list/show for archive"
     echo "  daemon  / d [start|stop|restart|status]        Manage the planq WebSocket daemon"
