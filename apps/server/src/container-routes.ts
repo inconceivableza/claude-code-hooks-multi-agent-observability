@@ -2066,17 +2066,20 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const container = getContainer(containerId);
     if (!container) return err('Container not found', 404);
 
-    const taskBeforeArchive = getPlanqTasks(containerId).find(t => t.id === taskId);
     const result = archiveTask(taskId);
     if (!result.ok) return err('Task not found', 404);
     touchPlanqServerModified(containerId);
 
-    if (taskBeforeArchive) {
-      sendApplyChanges(containerId, [{
-        id: crId(), type: 'delete_task', source: 'dashboard', timestamp: Date.now() / 1000,
-        task_key: taskBeforeArchive.filename ?? taskBeforeArchive.description,
+    if (result.archivedTasks.length > 0) {
+      // Send delete_task for parent and all subtasks so the container planq file stays in sync.
+      // Subtasks are sent in reverse order (last first) so deletions don't shift line numbers.
+      const changes = [...result.archivedTasks].reverse().map(t => ({
+        id: crId(), type: 'delete_task' as const, source: 'dashboard' as const,
+        timestamp: Date.now() / 1000,
+        task_key: t.filename ?? t.description,
         payload: {},
-      }]);
+      }));
+      sendApplyChanges(containerId, changes);
     }
     if (containerWsMap.has(containerId)) {
       await relayFileWrite(containerId, 'archive/planq-history.txt', result.historyContent).catch(() => {});

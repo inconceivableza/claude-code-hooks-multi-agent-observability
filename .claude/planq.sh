@@ -702,32 +702,38 @@ _get_subtasks() {
 }
 
 _archive_one_task() {
-    local line_num="$1" task_line="$2"
+    local line_num="$1" task_line="$2" mode="${3:-both}"
+    # mode: "both" (default) | "history" (write history only) | "delete" (delete from planq only)
     local task_type task_value task_auto_commit
     _parse_task "$task_line"
 
-    mkdir -p "$ARCHIVE_DIR"
+    if [ "$mode" != "delete" ]; then
+        mkdir -p "$ARCHIVE_DIR"
 
-    if [ "$task_type" = "task" ] || [ "$task_type" = "plan" ] || [ "$task_type" = "make-plan" ] || [ "$task_type" = "investigate" ]; then
-        if [ -f "$PLANS_DIR/$task_value" ]; then
-            mv "$PLANS_DIR/$task_value" "$ARCHIVE_DIR/$task_value"
-            echo "  Moved: plans/$task_value → plans/archive/$task_value"
-        fi
-        if [ "$task_type" = "investigate" ]; then
-            local feedback="${task_value/#investigate-/feedback-}"
-            if [ -f "$PLANS_DIR/$feedback" ]; then
-                mv "$PLANS_DIR/$feedback" "$ARCHIVE_DIR/$feedback"
-                echo "  Moved: plans/$feedback → plans/archive/$feedback"
+        if [ "$task_type" = "task" ] || [ "$task_type" = "plan" ] || [ "$task_type" = "make-plan" ] || [ "$task_type" = "investigate" ]; then
+            if [ -f "$PLANS_DIR/$task_value" ]; then
+                mv "$PLANS_DIR/$task_value" "$ARCHIVE_DIR/$task_value"
+                echo "  Moved: plans/$task_value → plans/archive/$task_value"
+            fi
+            if [ "$task_type" = "investigate" ]; then
+                local feedback="${task_value/#investigate-/feedback-}"
+                if [ -f "$PLANS_DIR/$feedback" ]; then
+                    mv "$PLANS_DIR/$feedback" "$ARCHIVE_DIR/$feedback"
+                    echo "  Moved: plans/$feedback → plans/archive/$feedback"
+                fi
             fi
         fi
+
+        # Read original line (preserving status prefix) before deleting
+        local original_line
+        original_line="$(awk -v n="$line_num" 'NR == n { print; exit }' "$PLANQ_FILE")"
+        original_line="${original_line#"${original_line%%[![:space:]]*}"}"
+        printf '%s\n' "$original_line" >> "$HISTORY_FILE"
     fi
 
-    # Read original line (preserving status prefix) before deleting
-    local original_line
-    original_line="$(awk -v n="$line_num" 'NR == n { print; exit }' "$PLANQ_FILE")"
-    original_line="${original_line#"${original_line%%[![:space:]]*}"}"
-    printf '%s\n' "$original_line" >> "$HISTORY_FILE"
-    _delete_line "$line_num"
+    if [ "$mode" != "history" ]; then
+        _delete_line "$line_num"
+    fi
 }
 
 # ── Subcommands ───────────────────────────────────────────────────────────────
@@ -1946,10 +1952,14 @@ cmd_archive() {
         return
     fi
 
-    # Process in reverse line order to preserve validity of line numbers
+    # Write history in forward order (parent before subtasks), then delete in reverse
+    # (reverse deletion preserves line number validity as higher lines are removed first)
     while IFS=$'\t' read -r line_num task_line; do
         echo "Archiving: $task_line"
-        _archive_one_task "$line_num" "$task_line"
+        _archive_one_task "$line_num" "$task_line" "history"
+    done < <(sort -t$'\t' -k1 -n "$tmp_tasks")
+    while IFS=$'\t' read -r line_num task_line; do
+        _archive_one_task "$line_num" "$task_line" "delete"
     done < <(sort -t$'\t' -k1 -rn "$tmp_tasks")
     rm -f "$tmp_tasks"
     _notify_daemon

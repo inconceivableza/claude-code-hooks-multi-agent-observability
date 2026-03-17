@@ -903,21 +903,37 @@ export function resolveTaskLinks(containerId: string, filesCache: Map<string, st
   return changed;
 }
 
-export function archiveTask(taskId: number): { ok: boolean; historyContent: string; containerId: string } {
+export function archiveTask(taskId: number): { ok: boolean; historyContent: string; containerId: string; archivedTasks: PlanqTaskRow[] } {
   const row = db.prepare('SELECT * FROM planq_tasks WHERE id = ?').get(taskId) as any;
-  if (!row) return { ok: false, historyContent: '', containerId: '' };
-  const task: PlanqTaskRow = rowToTask(row);
+  if (!row) return { ok: false, historyContent: '', containerId: '', archivedTasks: [] };
   const containerId: string = row.container_id;
+
+  // Collect the task and all its subtasks (recursively), in position order
+  // so the parent appears before its subtasks in the history file.
+  function collectWithSubtasks(id: number): PlanqTaskRow[] {
+    const r = db.prepare('SELECT * FROM planq_tasks WHERE id = ?').get(id) as any;
+    if (!r) return [];
+    const t: PlanqTaskRow = rowToTask(r);
+    const children = (db.prepare('SELECT * FROM planq_tasks WHERE parent_task_id = ? ORDER BY position').all(id) as any[]).map(rowToTask);
+    const result: PlanqTaskRow[] = [t];
+    for (const child of children) {
+      result.push(...collectWithSubtasks(child.id));
+    }
+    return result;
+  }
+  const toArchive = collectWithSubtasks(taskId);
+  const ids = toArchive.map(t => t.id);
 
   const existingRow = db.prepare('SELECT planq_history FROM containers WHERE id = ?').get(containerId) as any;
   const existingHistory: string = existingRow?.planq_history ?? '';
-  const newEntry = serializePlanqOrder([task]);
+  const newEntry = serializePlanqOrder(toArchive);
   const updatedHistory = (existingHistory ? existingHistory.trimEnd() + '\n' : '') + newEntry;
 
   db.prepare('UPDATE containers SET planq_history = ? WHERE id = ?').run(updatedHistory, containerId);
-  db.prepare('DELETE FROM planq_tasks WHERE id = ?').run(taskId);
+  const deleteStmt = db.prepare('DELETE FROM planq_tasks WHERE id = ?');
+  for (const id of ids) deleteStmt.run(id);
 
-  return { ok: true, historyContent: updatedHistory, containerId };
+  return { ok: true, historyContent: updatedHistory, containerId, archivedTasks: toArchive };
 }
 
 export interface StoredGitCommit {
