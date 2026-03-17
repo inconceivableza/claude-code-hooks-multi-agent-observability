@@ -1446,6 +1446,15 @@ cmd_do() {
     if [ -z "$ident" ]; then
         echo "Error: could not determine task identifier to run" >&2; return 1
     fi
+    # Mark the task underway before running so the daemon sees it as in-progress
+    local task_info line_num task_line
+    task_info="$(_find_task_by_identifier "$ident")" || true
+    if [ -n "$task_info" ]; then
+        line_num="${task_info%%	*}"
+        task_line="${task_info#*	}"
+        _mark_underway "$line_num" "$task_line"
+        _notify_daemon
+    fi
     cmd_run "$ident"
 }
 
