@@ -18,6 +18,16 @@
         "vite": "^7.0.4",
         "vue-tsc": "^2.2.12",
       },
+      "optionalDependencies": {
+        "@rollup/rollup-darwin-arm64": "~4.59.0",
+        "@rollup/rollup-darwin-x64": "~4.59.0",
+        "@rollup/rollup-linux-arm64-gnu": "~4.59.0",
+        "@rollup/rollup-linux-arm64-musl": "~4.59.0",
+        "@rollup/rollup-linux-x64-gnu": "~4.59.0",
+        "@rollup/rollup-linux-x64-musl": "~4.59.0",
+        "@rollup/rollup-win32-arm64-msvc": "~4.59.0",
+        "@rollup/rollup-win32-x64-msvc": "~4.59.0",
+      },
     },
   },
   "packages": {
