@@ -1,6 +1,6 @@
 Manage and execute tasks from the plan queue.
 
-Supports the same subcommands and aliases as `planq.sh`:
+Supports the same subcommands and aliases as `planq`:
 - `/planq` or `/planq run` — execute the next pending task inline, then mark it done
 - `/planq run N` or `/planq r N` — execute task #N inline, then mark it done
 - `/planq auto` or `/planq A` — run all auto-queued tasks continuously in this session
@@ -8,7 +8,7 @@ Supports the same subcommands and aliases as `planq.sh`:
 - `/planq list -a` or `/planq l -a` — show the archive
 - `/planq show [N]` or `/planq s [N]` — show details of the next task, or task #N
 - `/planq show -a [N]` or `/planq s -a [N]` — show details of an archive entry
-- `/planq create ...` or `/planq c ...` — add a task (pass through to planq.sh)
+- `/planq create ...` or `/planq c ...` — add a task (pass through to planq)
 - `/planq do ...` — create a task and immediately execute it inline (does NOT loop into auto-queue)
 - `/planq follow-up <parent> [opts] [desc]` or `/planq fu ...` — create subtask under parent, mark underway, then execute inline
 - `/planq fixup <parent> [opts] [desc]` or `/planq fx ...` — same but with fix-required link type
@@ -25,10 +25,10 @@ Arguments: $ARGUMENTS
 Parse `$ARGUMENTS` to determine the subcommand (first word) and any remaining args.
 
 **For `list` / `l` (or no arguments with intent to list):**
-Run `bash .claude/planq.sh list` and show the output. Stop.
+Run `planq list` and show the output. Stop.
 
 **For `show` / `s [N]`:**
-Run `bash .claude/planq.sh show $REMAINING_ARGS` and show the output. Stop.
+Run `planq show $REMAINING_ARGS` and show the output. Stop.
 
 **For `auto` / `A`:**
 
@@ -36,19 +36,19 @@ Run auto-queued tasks continuously in this Claude session (inline, no subprocess
 
 Step 1 — Reload the full task list to get current state:
 ```bash
-bash .claude/planq.sh list
+planq list
 ```
 Find the first task with `auto-queue` status (shown as `⏱`). If none exist, show the list and tell the user there are no auto-queue tasks. Stop.
 
 Step 2 — Get full details for that task using its identifier (filename or description text, NOT its position number — position numbers shift as tasks complete):
 ```bash
-bash .claude/planq.sh show <filename-or-next-with-no-arg>
+planq show <filename-or-next-with-no-arg>
 ```
 
 Step 3 — Execute the task inline using the same steps as `run`:
-- Mark the task underway: `bash .claude/planq.sh mark:underway <identifier>`
+- Mark the task underway: `planq mark:underway <identifier>`
 - Execute the task inline (do NOT call `claude` or spawn any subprocess) per the task-type table below
-- Mark the task done: `bash .claude/planq.sh mark:done <identifier>`
+- Mark the task done: `planq mark:done <identifier>`
 - If `Auto-commit after: yes` was shown in the details, perform a git commit now.
 
 Step 4 — After completing a task, go back to Step 1 (reload the full list fresh — do NOT reuse cached task numbers or positions). Repeat until no more auto-queue tasks remain.
@@ -61,7 +61,7 @@ Create a subtask and immediately execute it inline (unless it is a manual task t
 
 Step 1 — Run the shell command and capture its output:
 ```bash
-bash .claude/planq.sh follow-up $REMAINING_ARGS   # (or fixup, fu, fx as appropriate)
+planq follow-up $REMAINING_ARGS   # (or fixup, fu, fx as appropriate)
 ```
 Look for a line `Marked underway: <type>: <identifier>` in the output. Extract `<type>` and `<identifier>` (the part after `<type>: `).
 
@@ -69,7 +69,7 @@ If the output contains a warning or error instead (no "Marked underway:" line), 
 
 Step 2 — Get full task details using the identifier:
 ```bash
-bash .claude/planq.sh show <identifier>
+planq show <identifier>
 ```
 
 Step 3 — Execute the task **inline** (do NOT call `claude` or spawn any subprocess) based on the task type from the execution table below. The task is already marked underway — do NOT mark it underway again.
@@ -84,8 +84,8 @@ Step 3 — Execute the task **inline** (do NOT call `claude` or spawn any subpro
 | `manual-test` / `manual-commit` / `manual-task` | Tell the user this is a manual step, describe what needs to be done, and ask them to confirm when complete. Do NOT mark it done — let the user do that. Stop here. |
 
 Step 4 — After successfully completing the task, mark it done:
-- If the task has a filename (task/plan/make-plan/investigate): `bash .claude/planq.sh mark:done <identifier>`
-- If it is an unnamed-task: `bash .claude/planq.sh mark:done "<identifier>"`
+- If the task has a filename (task/plan/make-plan/investigate): `planq mark:done <identifier>`
+- If it is an unnamed-task: `planq mark:done "<identifier>"`
 
 Step 5 — If the task details showed `Auto-commit after: yes`, perform a git commit now. Follow the standard commit protocol: stage relevant files, write a concise commit message describing what was done, and create the commit.
 
@@ -95,7 +95,7 @@ Create a task and immediately execute it inline. Do NOT loop into auto-queue aft
 
 Step 1 — Create the task using `create` (not `do`, to avoid spawning a subprocess):
 ```bash
-bash .claude/planq.sh create $REMAINING_ARGS
+planq create $REMAINING_ARGS
 ```
 Look for a line `Created: <type>: <identifier>` in the output. Extract `<type>` and `<identifier>` (the part after `<type>: `).
 
@@ -103,12 +103,12 @@ If the output contains an error instead (no "Created:" line), show the output to
 
 Step 2 — Get full task details using the identifier:
 ```bash
-bash .claude/planq.sh show <identifier>
+planq show <identifier>
 ```
 
 Step 3 — Mark the task as underway using its identifier:
-- If the task has a filename (task/plan/make-plan/investigate): `bash .claude/planq.sh mark:underway <filename>`
-- If it is an unnamed-task: `bash .claude/planq.sh mark:underway "<identifier>"`
+- If the task has a filename (task/plan/make-plan/investigate): `planq mark:underway <filename>`
+- If it is an unnamed-task: `planq mark:underway "<identifier>"`
 
 Step 4 — Execute the task **inline** (do NOT call `claude` or spawn any subprocess) based on the task type from the execution table below:
 
@@ -122,27 +122,27 @@ Step 4 — Execute the task **inline** (do NOT call `claude` or spawn any subpro
 | `manual-test` / `manual-commit` / `manual-task` | Tell the user this is a manual step, describe what needs to be done, and ask them to confirm when complete. Do NOT mark it done — let the user do that. Stop here. |
 
 Step 5 — After successfully completing the task, mark it done:
-- If the task has a filename (task/plan/make-plan/investigate): `bash .claude/planq.sh mark:done <identifier>`
-- If it is an unnamed-task: `bash .claude/planq.sh mark:done "<identifier>"`
+- If the task has a filename (task/plan/make-plan/investigate): `planq mark:done <identifier>`
+- If it is an unnamed-task: `planq mark:done "<identifier>"`
 
 Step 6 — If the task details showed `Auto-commit after: yes`, perform a git commit now. Follow the standard commit protocol: stage relevant files, write a concise commit message describing what was done, and create the commit.
 
 **STOP here. Do NOT continue to run other auto-queued tasks.**
 
 **For `create` / `c`, `mark` / `m`, `delete` / `x`, `archive` / `a`, `daemon` / `d`:**
-Run `bash .claude/planq.sh $ARGUMENTS` and show the output. Stop.
+Run `planq $ARGUMENTS` and show the output. Stop.
 
 **For `run` / `r [N]`, or no subcommand (default: run next):**
 
 Step 1 — Reload the task list to get current state, then get task details:
 ```bash
-bash .claude/planq.sh show [N]
+planq show [N]
 ```
 If there are no pending tasks, report that and stop. Note: if N was specified, verify the task at that position matches expectations — task positions shift as tasks complete.
 
 Step 1b — Mark the task as underway using its **identifier** (filename or description), never by position number:
-- If the task has a filename (task/plan/make-plan/investigate): `bash .claude/planq.sh mark:underway <filename>`
-- If the task is an unnamed-task or other description-only type: `bash .claude/planq.sh mark:underway "<exact description text>"`
+- If the task has a filename (task/plan/make-plan/investigate): `planq mark:underway <filename>`
+- If the task is an unnamed-task or other description-only type: `planq mark:underway "<exact description text>"`
 
 Step 2 — Execute the task **inline** (do NOT call `claude` or spawn any subprocess):
 
@@ -156,7 +156,7 @@ Step 2 — Execute the task **inline** (do NOT call `claude` or spawn any subpro
 | `manual-test` / `manual-commit` / `manual-task` | Tell the user this is a manual step, describe what needs to be done, and ask them to confirm when complete. Do NOT mark it done — let the user do that. |
 
 Step 3 — After successfully completing the task (not for manual steps), mark it done using whichever identifier you have:
-- If the task has a filename (task/plan/make-plan/investigate): `bash .claude/planq.sh mark:done <filename>`
-- If the task is an unnamed-task or other description-only type: `bash .claude/planq.sh mark:done "<exact description text>"`
+- If the task has a filename (task/plan/make-plan/investigate): `planq mark:done <filename>`
+- If the task is an unnamed-task or other description-only type: `planq mark:done "<exact description text>"`
 
 Step 4 — If the task details showed `Auto-commit after: yes`, perform a git commit now. Follow the standard commit protocol: stage relevant files, write a concise commit message describing what was done, and create the commit. Do NOT skip this step if the flag was present.
