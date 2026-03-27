@@ -1302,11 +1302,22 @@ _wait_for_stage_commit() {
     done
 }
 
+_task_slug() {
+    # Generate a slug from the first 5 words of a description string.
+    # Output: lowercase, non-alphanumeric chars removed, words joined by hyphens.
+    printf '%s' "$1" | head -1 | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9 ]//g' | tr -s ' ' ' ' | sed 's/^ //;s/ $//' | cut -d' ' -f1-5 | tr ' ' '-'
+}
+
+_random_hex7() {
+    # Generate a 7-character random hex string (like a short git hash).
+    printf '%07x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFFF ))
+}
+
 cmd_create() {
-    local task_type="unnamed-task" filename="" description="" auto_commit="" stage_commit="" manual_commit="" add_after="" add_end="" auto_queue_plan="" parent="" link_type="follow-up" queue_after=""
+    local task_type="unnamed-task" task_type_explicit="" filename="" description="" auto_commit="" stage_commit="" manual_commit="" add_after="" add_end="" auto_queue_plan="" parent="" link_type="follow-up" queue_after=""
     while [ $# -gt 0 ]; do
         case "$1" in
-            --type|-t) task_type="${2:-}"; shift 2 ;;
+            --type|-t) task_type="${2:-}"; task_type_explicit="1"; shift 2 ;;
             --file|-f) filename="${2:-}"; shift 2 ;;
             --parent|-p) parent="${2:-}"; shift 2 ;;
             --link-type|-l) link_type="${2:-}"; shift 2 ;;
@@ -1330,6 +1341,30 @@ cmd_create() {
             stage-commit)  stage_commit="1" ;;
             manual-commit) manual_commit="1" ;;
         esac
+    fi
+
+    # If -f was given but -t was not explicitly set, infer type from filename prefix.
+    if [ -n "$filename" ] && [ -z "$task_type_explicit" ]; then
+        case "$filename" in
+            make-plan-*) task_type="make-plan" ;;
+            plan-*)      task_type="plan" ;;
+            investigate-*) task_type="investigate" ;;
+            *)           task_type="task" ;;
+        esac
+    fi
+
+    # If unnamed-task with multi-line description, auto-generate a file-based task.
+    if [ "$task_type" = "unnamed-task" ] && [ -n "$description" ] && printf '%s' "$description" | grep -q $'\n'; then
+        local _slug _rand _auto_fn
+        _slug="$(_task_slug "$description")"
+        _rand="$(_random_hex7)"
+        _auto_fn="task-${_slug}-${_rand}.md"
+        mkdir -p "$PLANS_DIR"
+        printf '%s\n' "$description" > "$PLANS_DIR/$_auto_fn"
+        echo "Auto-generated file for multi-line task: plans/$_auto_fn"
+        filename="$_auto_fn"
+        task_type="task"
+        description=""
     fi
 
     # Normalize filename: auto-prefix with type if bare, auto-append .md
@@ -1478,20 +1513,20 @@ cmd_create() {
 
 cmd_do() {
     # do = create + immediately run the created task
-    cmd_create "$@" || return 1
-    # Find the identifier from the same args cmd_create used
-    local task_type="unnamed-task" filename="" description=""
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --type|-t) task_type="${2:-}"; shift 2 ;;
-            --file|-f) filename="${2:-}"; shift 2 ;;
-            --parent|-p) shift 2 ;;
-            --link-type|-l) shift 2 ;;
-            --auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--auto-queue-plan|--queue|-q) shift ;;
-            *) description="$1"; shift ;;
-        esac
-    done
-    local ident="${filename:-$description}"
+    # Capture cmd_create output to extract the actual identifier (handles auto-generated
+    # filenames for multi-line tasks and type inference for -f without -t).
+    local create_out
+    create_out="$(cmd_create "$@" 2>&1)" || { printf '%s\n' "$create_out" >&2; return 1; }
+    printf '%s\n' "$create_out"
+
+    # Extract the identifier from the "Created: TYPE: VALUE" output line
+    local created_line ident
+    created_line="$(printf '%s\n' "$create_out" | grep '^Created: ' | head -1)"
+    if [ -n "$created_line" ]; then
+        local after_type="${created_line#Created: }"   # "TYPE: VALUE [+flags]"
+        ident="${after_type#*: }"                       # "VALUE [+flags]"
+        ident="${ident%% +*}"                           # strip trailing flags
+    fi
     if [ -z "$ident" ]; then
         echo "Error: could not determine task identifier to run" >&2; return 1
     fi
@@ -2212,14 +2247,20 @@ cmd_follow_up() {
     fi
 
     # Create the subtask under the parent
-    cmd_create -p "$parent" -l "$link_type" "$@" || return 1
+    # Capture output to extract actual identifier (handles auto-generated filenames and
+    # type inference for -f without -t).
+    local create_out
+    create_out="$(cmd_create -p "$parent" -l "$link_type" "$@" 2>&1)" || { printf '%s\n' "$create_out" >&2; return 1; }
+    printf '%s\n' "$create_out"
 
-    # Determine identifier for the newly created task
-    local ident
-    case "$task_type" in
-        task|plan|make-plan) ident="$filename" ;;
-        *) ident="$description" ;;
-    esac
+    # Extract identifier from "Created subtask (...): TYPE: VALUE [+flags]" output line
+    local created_line ident
+    created_line="$(printf '%s\n' "$create_out" | grep '^Created subtask ' | head -1)"
+    if [ -n "$created_line" ]; then
+        local after_paren="${created_line##*): }"   # "TYPE: VALUE [+flags]"
+        ident="${after_paren#*: }"                   # "VALUE [+flags]"
+        ident="${ident%% +*}"                        # strip trailing flags
+    fi
 
     if [ -z "$ident" ]; then
         echo "Warning: could not determine task identifier to mark underway" >&2

@@ -140,7 +140,7 @@
         <template v-for="{ task, dimmed } in filteredTasksWithMeta" :key="task.id">
           <PlanqTaskRow
             :task="task"
-            :position="tasks.indexOf(task) + 1"
+            :position="sortedTasks.indexOf(task) + 1"
             :container-id="containerId"
             :all-tasks="tasks"
             :dimmed="dimmed"
@@ -162,7 +162,7 @@
           <template v-for="(child, childIdx) in filteredChildren(task.id)" :key="child.id">
             <PlanqTaskRow
               :task="child"
-              :position="`${tasks.indexOf(task) + 1}.${childIdx + 1}`"
+              :position="`${sortedTasks.indexOf(task) + 1}.${childIdx + 1}`"
               :container-id="containerId"
               :all-tasks="tasks"
               :is-child="true"

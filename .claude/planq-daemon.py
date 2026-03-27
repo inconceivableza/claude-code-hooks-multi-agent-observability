@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import queue
+import random
 import re
 import signal
 import subprocess
@@ -1171,6 +1172,20 @@ def _planq_file_path() -> 'Path':
     return WORKSPACE_ROOT / 'plans' / 'planq-order.txt'
 
 
+def _task_slug(text: str) -> str:
+    """Generate a slug from the first 5 words of a description string.
+    Lowercase, non-alphanumeric chars removed, words joined by hyphens."""
+    first_line = text.split('\n')[0].strip().lower()
+    cleaned = re.sub(r'[^a-z0-9 ]', '', first_line)
+    words = [w for w in cleaned.split() if w][:5]
+    return '-'.join(words)
+
+
+def _random_hex7() -> str:
+    """Generate a 7-character random hex string (like a short git hash)."""
+    return '%07x' % random.randint(0, 0xFFFFFFF)
+
+
 def _read_planq_lines() -> list[str]:
     p = _planq_file_path()
     if not p.exists():
@@ -1327,6 +1342,20 @@ def _apply_add_task(payload: dict) -> None:
     auto_queue_plan = payload.get('auto_queue_plan', False)
     parent_task_key = payload.get('parent_task_key')
     review_status = payload.get('review_status', 'none')
+
+    # If unnamed-task with multi-line description, auto-generate a file-based task.
+    if task_type == 'unnamed-task' and description and '\n' in description:
+        slug = _task_slug(description)
+        rand = _random_hex7()
+        auto_fn = f'task-{slug}-{rand}.md'
+        plans_dir = WORKSPACE_ROOT / 'plans'
+        plans_dir.mkdir(exist_ok=True)
+        content = description if description.endswith('\n') else description + '\n'
+        (plans_dir / auto_fn).write_text(content)
+        log.info('Auto-generated file for multi-line unnamed task: plans/%s', auto_fn)
+        filename = auto_fn
+        task_type = 'task'
+        description = None
 
     value = filename if filename else (description or '')
     if task_type == 'make-plan':
