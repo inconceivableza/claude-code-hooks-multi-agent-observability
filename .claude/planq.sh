@@ -166,17 +166,19 @@ _find_task_by_dotted_number() {
         [ -z "$trimmed" ] && continue
         [[ "$trimmed" == "# deferred:"* ]] && continue
         [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* ]] && continue
-        local content depth dotted
-        if [[ "$trimmed" == "# done: "* ]]; then content="${trimmed#"# done: "}"
-        elif [[ "$trimmed" == "# underway: "* ]]; then content="${trimmed#"# underway: "}"
-        elif [[ "$trimmed" == "# auto-queue: "* ]]; then content="${trimmed#"# auto-queue: "}"
-        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
-        elif [[ "$trimmed" == "# awaiting-plan: "* ]]; then content="${trimmed#"# awaiting-plan: "}"
-        else content="$trimmed"
+        # content: stripped of both leading-spaces and status prefix — for depth/number calc
+        # task_line: stripped of status prefix only — preserves depth indent for callers
+        local content task_line depth dotted
+        if [[ "$trimmed" == "# done: "* ]]; then           content="${trimmed#"# done: "}";           task_line="${line#"# done: "}"
+        elif [[ "$trimmed" == "# underway: "* ]]; then      content="${trimmed#"# underway: "}";        task_line="${line#"# underway: "}"
+        elif [[ "$trimmed" == "# auto-queue: "* ]]; then    content="${trimmed#"# auto-queue: "}";      task_line="${line#"# auto-queue: "}"
+        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"; task_line="${line#"# awaiting-commit: "}"
+        elif [[ "$trimmed" == "# awaiting-plan: "* ]]; then content="${trimmed#"# awaiting-plan: "}";   task_line="${line#"# awaiting-plan: "}"
+        else content="$trimmed"; task_line="$line"
         fi
         _content_depth_step "$content"; _dotted_num_step "$depth"
         if [ "$dotted" = "$target" ]; then
-            printf '%d\t%s\n' "$n" "$content"
+            printf '%d\t%s\n' "$n" "$task_line"
             return
         fi
     done < "$PLANQ_FILE"
@@ -187,11 +189,11 @@ _find_task_by_dotted_number() {
         local trimmed="${line#"${line%%[![:space:]]*}"}"
         [ -z "$trimmed" ] && continue
         [[ "$trimmed" == "# deferred:"* ]] || continue
-        local content depth dotted
-        content="${trimmed#"# deferred: "}"
+        local content task_line depth dotted
+        content="${trimmed#"# deferred: "}"; task_line="${line#"# deferred: "}"
         _content_depth_step "$content"; _dotted_num_step "$depth"
         if [ "$dotted" = "$target" ]; then
-            printf '%d\t%s\n' "$n" "$content"
+            printf '%d\t%s\n' "$n" "$task_line"
             return
         fi
     done < "$PLANQ_FILE"
@@ -271,19 +273,16 @@ _find_task_by_identifier() {
         local trimmed="${line#"${line%%[![:space:]]*}"}"
         [ -z "$trimmed" ] && continue
         [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* && "$trimmed" != "# deferred:"* ]] && continue
-        local task_line="$trimmed"
-        if [[ "$task_line" == "# done: "* ]]; then
-            task_line="${task_line#"# done: "}"
-        elif [[ "$task_line" == "# underway: "* ]]; then
-            task_line="${task_line#"# underway: "}"
-        elif [[ "$task_line" == "# auto-queue: "* ]]; then
-            task_line="${task_line#"# auto-queue: "}"
-        elif [[ "$task_line" == "# awaiting-commit: "* ]]; then
-            task_line="${task_line#"# awaiting-commit: "}"
-        elif [[ "$task_line" == "# awaiting-plan: "* ]]; then
-            task_line="${task_line#"# awaiting-plan: "}"
-        elif [[ "$task_line" == "# deferred: "* ]]; then
-            task_line="${task_line#"# deferred: "}"
+        # Strip status prefix from line (not trimmed) to preserve depth indent ("  - ").
+        # Use trimmed for prefix detection; strip from line so leading spaces survive.
+        local task_line
+        if [[ "$trimmed" == "# done: "* ]]; then           task_line="${line#"# done: "}"
+        elif [[ "$trimmed" == "# underway: "* ]]; then      task_line="${line#"# underway: "}"
+        elif [[ "$trimmed" == "# auto-queue: "* ]]; then    task_line="${line#"# auto-queue: "}"
+        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then task_line="${line#"# awaiting-commit: "}"
+        elif [[ "$trimmed" == "# awaiting-plan: "* ]]; then task_line="${line#"# awaiting-plan: "}"
+        elif [[ "$trimmed" == "# deferred: "* ]]; then      task_line="${line#"# deferred: "}"
+        else task_line="$line"
         fi
         local task_value="${task_line#*: }"
         # Strip commit/plan flags from comparison (flags, not part of filename/description)
@@ -1403,14 +1402,22 @@ cmd_create() {
         parent_line_num="${parent_info%%	*}"
         parent_task_line="${parent_info#*	}"
 
-        # Detect parent depth from raw line in file (leading "  " pairs before "- ")
+        # Detect parent depth: strip status prefix first, then use _content_depth_step.
+        # Status prefixes ("# done: " etc.) must be removed before depth calculation
+        # or the "- " depth marker won't be visible.
         local parent_raw_line parent_depth=0
         parent_raw_line=$(sed -n "${parent_line_num}p" "$PLANQ_FILE")
-        local parent_spaces="${parent_raw_line%%[! ]*}"
-        local parent_after="${parent_raw_line#"$parent_spaces"}"
-        if [[ "$parent_after" == "- "* ]]; then
-            parent_depth=$(( ${#parent_spaces} / 2 + 1 ))
+        local parent_trimmed="${parent_raw_line#"${parent_raw_line%%[![:space:]]*}"}"
+        local parent_content
+        if   [[ "$parent_trimmed" == "# done: "* ]];           then parent_content="${parent_trimmed#"# done: "}"
+        elif [[ "$parent_trimmed" == "# underway: "* ]];        then parent_content="${parent_trimmed#"# underway: "}"
+        elif [[ "$parent_trimmed" == "# auto-queue: "* ]];      then parent_content="${parent_trimmed#"# auto-queue: "}"
+        elif [[ "$parent_trimmed" == "# awaiting-commit: "* ]]; then parent_content="${parent_trimmed#"# awaiting-commit: "}"
+        elif [[ "$parent_trimmed" == "# deferred: "* ]];        then parent_content="${parent_trimmed#"# deferred: "}"
+        else parent_content="$parent_trimmed"
         fi
+        _content_depth_step "$parent_content"
+        parent_depth=$depth
 
         # Build depth prefix for child: (parent_depth)*"  " + "- "
         local child_depth=$(( parent_depth + 1 ))
@@ -1420,20 +1427,26 @@ cmd_create() {
 
         local indented_task_line="${depth_prefix}${task_line}"
 
-        # Find insertion point: after last line in parent's subtree (depth > parent_depth)
+        # Find insertion point: after last line in parent's subtree (depth > parent_depth).
+        # Strip status prefix from each line before depth checking — same as _get_subtasks.
         local insert_after="$parent_line_num"
         local n=0
         while IFS= read -r line; do
             n=$(( n + 1 ))
             [ "$n" -le "$parent_line_num" ] && continue
             [ -z "$line" ] && continue
-            local line_spaces="${line%%[! ]*}"
-            local line_after="${line#"$line_spaces"}"
-            local line_depth=0
-            if [[ "$line_after" == "- "* ]]; then
-                line_depth=$(( ${#line_spaces} / 2 + 1 ))
+            local trimmed="${line#"${line%%[![:space:]]*}"}"
+            local content
+            if   [[ "$trimmed" == "# done: "* ]];           then content="${trimmed#"# done: "}"
+            elif [[ "$trimmed" == "# underway: "* ]];        then content="${trimmed#"# underway: "}"
+            elif [[ "$trimmed" == "# auto-queue: "* ]];      then content="${trimmed#"# auto-queue: "}"
+            elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
+            elif [[ "$trimmed" == "# deferred: "* ]];        then content="${trimmed#"# deferred: "}"
+            elif [[ "$trimmed" == "#"* ]];                   then continue
+            else content="$trimmed"
             fi
-            [ "$line_depth" -le "$parent_depth" ] && break
+            _content_depth_step "$content"
+            [ "$depth" -le "$parent_depth" ] && break
             insert_after="$n"
         done < "$PLANQ_FILE"
 
