@@ -884,7 +884,8 @@ cmd_run() {
     for arg in "$@"; do
         case "$arg" in
             --dry-run|-n) dry_run=1 ;;
-            [0-9]*)    task_num="$arg" ;;
+            --*|-?) ;;  # skip other flags
+            *)     task_num="$arg" ;;
         esac
     done
 
