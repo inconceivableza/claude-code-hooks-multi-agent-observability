@@ -48,6 +48,7 @@ bash .claude/planq.sh show <filename-or-next-with-no-arg>
 Step 3 — Execute the task inline using the same steps as `run`:
 - Mark the task underway: `bash .claude/planq.sh mark:underway <identifier>`
 - Execute the task inline (do NOT call `claude` or spawn any subprocess) per the task-type table below
+- For `task`, `plan`, `make-plan` types: write a brief summary to `plans/feedback-<identifier>.md` before marking done
 - Mark the task done: `bash .claude/planq.sh mark:done <identifier>`
 - If `Auto-commit after: yes` was shown in the details, perform a git commit now.
 
@@ -82,6 +83,9 @@ Step 3 — Execute the task **inline** (do NOT call `claude` or spawn any subpro
 | `investigate` | Read the prompt from `plans/<identifier>`. Research the question thoroughly and write your findings and conclusions to `plans/<feedback>`, where `<feedback>` is `<identifier>` with `investigate-` replaced by `feedback-`. |
 | `unnamed-task` | The description text (the identifier) IS the prompt — execute it directly. |
 | `manual-test` / `manual-commit` / `manual-task` | Tell the user this is a manual step, describe what needs to be done, and ask them to confirm when complete. Do NOT mark it done — let the user do that. Stop here. |
+
+Step 3b — Write feedback (mandatory for `task`, `plan`, `make-plan` types only):
+Write a brief summary of what was accomplished/implemented to `plans/feedback-<identifier>.md`. This file is displayed in the dashboard as the task's feedback. Skip this step for `unnamed-task`, `investigate` (feedback is the output), and manual task types.
 
 Step 4 — After successfully completing the task, mark it done:
 - If the task has a filename (task/plan/make-plan/investigate): `bash .claude/planq.sh mark:done <identifier>`
@@ -121,6 +125,9 @@ Step 4 — Execute the task **inline** (do NOT call `claude` or spawn any subpro
 | `unnamed-task` | The description text (the identifier) IS the prompt — execute it directly. |
 | `manual-test` / `manual-commit` / `manual-task` | Tell the user this is a manual step, describe what needs to be done, and ask them to confirm when complete. Do NOT mark it done — let the user do that. Stop here. |
 
+Step 4b — Write feedback (mandatory for `task`, `plan`, `make-plan` types only):
+Write a brief summary of what was accomplished/implemented to `plans/feedback-<identifier>.md`. This file is displayed in the dashboard as the task's feedback. Skip this step for `unnamed-task`, `investigate` (feedback is the output), and manual task types.
+
 Step 5 — After successfully completing the task, mark it done:
 - If the task has a filename (task/plan/make-plan/investigate): `bash .claude/planq.sh mark:done <identifier>`
 - If it is an unnamed-task: `bash .claude/planq.sh mark:done "<identifier>"`
@@ -154,6 +161,9 @@ Step 2 — Execute the task **inline** (do NOT call `claude` or spawn any subpro
 | `investigate` | Read the prompt from `plans/<filename>`. Research the question thoroughly and write your findings and conclusions to `plans/<feedback>`, where `<feedback>` is `<filename>` with `investigate-` replaced by `feedback-`. |
 | `unnamed-task` | The description text IS the prompt — execute it directly. |
 | `manual-test` / `manual-commit` / `manual-task` | Tell the user this is a manual step, describe what needs to be done, and ask them to confirm when complete. Do NOT mark it done — let the user do that. |
+
+Step 2b — Write feedback (mandatory for `task`, `plan`, `make-plan` types only):
+Write a brief summary of what was accomplished/implemented to `plans/feedback-<filename>.md`. This file is displayed in the dashboard as the task's feedback. Skip this step for `unnamed-task`, `investigate` (feedback is the output), and manual task types.
 
 Step 3 — After successfully completing the task (not for manual steps), mark it done using whichever identifier you have:
 - If the task has a filename (task/plan/make-plan/investigate): `bash .claude/planq.sh mark:done <filename>`
