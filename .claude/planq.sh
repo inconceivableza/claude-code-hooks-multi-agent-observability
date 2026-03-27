@@ -1317,9 +1317,41 @@ cmd_create() {
             --add-end) add_end="1"; shift ;;
             --auto-queue-plan) auto_queue_plan="1"; shift ;;
             --queue|-q) queue_after="1"; shift ;;
-            *) description="$1"; shift ;;
+            *) if [ -z "$description" ]; then description="$1"; else description="$description $1"; fi; shift ;;
         esac
     done
+
+    # planq-order.txt is line-based: newlines in descriptions break parsing.
+    # For file-based types (task/plan/make-plan) newlines are fine — they go
+    # into the file.  For description-only types, auto-create a task file so
+    # the full content is preserved.
+    if [ -n "$description" ] && [ -z "$filename" ]; then
+        case "$description" in
+            *$'\n'*)
+                case "$task_type" in
+                    unnamed-task|manual-test|manual-commit|manual-task|agent-test)
+                        local first_line="${description%%$'\n'*}"
+                        local slug
+                        slug="$(printf '%s' "$first_line" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 60)"
+                        [ -z "$slug" ] && slug="multiline"
+                        filename="task-${slug}.md"
+                        local counter=1
+                        while [ -f "$PLANS_DIR/$filename" ]; do
+                            filename="task-${slug}-${counter}.md"
+                            counter=$(( counter + 1 ))
+                        done
+                        mkdir -p "$PLANS_DIR"
+                        printf '%s\n' "$description" > "$PLANS_DIR/$filename"
+                        echo "Multiline description saved to: plans/$filename"
+                        if [ "$task_type" = "unnamed-task" ]; then
+                            task_type="task"
+                        fi
+                        description=""
+                        ;;
+                esac
+                ;;
+        esac
+    fi
 
     # Apply default commit mode from settings if no explicit flag was given
     if [ -z "$auto_commit" ] && [ -z "$stage_commit" ] && [ -z "$manual_commit" ]; then
@@ -1488,9 +1520,22 @@ cmd_do() {
             --parent|-p) shift 2 ;;
             --link-type|-l) shift 2 ;;
             --auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--auto-queue-plan|--queue|-q) shift ;;
-            *) description="$1"; shift ;;
+            *) if [ -z "$description" ]; then description="$1"; else description="$description $1"; fi; shift ;;
         esac
     done
+    # After cmd_create, a multiline unnamed-task was converted to a file-based task.
+    # Re-derive the filename the same way cmd_create would.
+    if [ -z "$filename" ] && [ -n "$description" ]; then
+        case "$description" in
+            *$'\n'*)
+                local first_line="${description%%$'\n'*}"
+                local slug
+                slug="$(printf '%s' "$first_line" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 60)"
+                [ -z "$slug" ] && slug="multiline"
+                filename="task-${slug}.md"
+                ;;
+        esac
+    fi
     local ident="${filename:-$description}"
     if [ -z "$ident" ]; then
         echo "Error: could not determine task identifier to run" >&2; return 1
@@ -2195,7 +2240,7 @@ cmd_follow_up() {
             --link-type|-l) link_type="${rest_args[$((i+1))]:-}"; i=$((i+2)) ;;
             --parent|-p|--auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--auto-queue-plan)
                 i=$((i+1)) ;;
-            *) description="${rest_args[$i]}"; i=$((i+1)) ;;
+            *) if [ -z "$description" ]; then description="${rest_args[$i]}"; else description="$description ${rest_args[$i]}"; fi; i=$((i+1)) ;;
         esac
     done
 
@@ -2214,7 +2259,21 @@ cmd_follow_up() {
     # Create the subtask under the parent
     cmd_create -p "$parent" -l "$link_type" "$@" || return 1
 
-    # Determine identifier for the newly created task
+    # Determine identifier for the newly created task.
+    # If cmd_create converted a multiline unnamed-task to a file-based task,
+    # the filename won't match our local vars.  Re-derive it.
+    if [ -z "$filename" ] && [ "$task_type" = "unnamed-task" ] && [ -n "$description" ]; then
+        case "$description" in
+            *$'\n'*)
+                local first_line="${description%%$'\n'*}"
+                local slug
+                slug="$(printf '%s' "$first_line" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 60)"
+                [ -z "$slug" ] && slug="multiline"
+                filename="task-${slug}.md"
+                task_type="task"
+                ;;
+        esac
+    fi
     local ident
     case "$task_type" in
         task|plan|make-plan) ident="$filename" ;;
