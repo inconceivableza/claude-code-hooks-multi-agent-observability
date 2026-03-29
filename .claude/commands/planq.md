@@ -10,8 +10,8 @@ Supports the same subcommands and aliases as `planq`:
 - `/planq show -a [N]` or `/planq s -a [N]` — show details of an archive entry
 - `/planq create ...` or `/planq c ...` — add a task (pass through to planq)
 - `/planq do ...` — create a task and immediately execute it inline (does NOT loop into auto-queue)
-- `/planq follow-up <parent> [opts] [desc]` or `/planq fu ...` — create subtask under parent, mark underway, then execute inline
-- `/planq fixup <parent> [opts] [desc]` or `/planq fx ...` — same but with fix-required link type
+- `/planq follow-up <parent> [opts] [desc]` or `/planq fu ...` — create subtask under parent (default -r: mark underway + execute inline)
+- `/planq fixup <parent> [opts] [desc]` or `/planq fx ...` — same but with fix-required link type (default -r)
 - `/planq mark <done|underway|inactive> <N|filename|text>` or `/planq m:done <N|filename|text>` — mark a task
 - `/planq delete N` or `/planq x N` — delete a task
 - `/planq archive [N...]` or `/planq a [N...]` — archive done tasks (all done tasks if no args)
@@ -58,15 +58,19 @@ If the user interrupts (says stop, or presses Ctrl-C), stop the loop immediately
 
 **For `follow-up` / `fu` / `fixup` / `fx`:**
 
-Create a subtask and immediately execute it inline (unless it is a manual task type).
+Create a subtask. By default from /planq, pass `-r` to mark it underway and execute inline.
+If the user explicitly passes `-n` or `-q`, do NOT inject `-r` — respect their choice.
 
-Step 1 — Run the shell command and capture its output:
+Step 1 — Run the shell command and capture its output.
+If the user's args do NOT already contain `-r`, `-n`, or `-q`, inject `-r` (run mode) automatically:
 ```bash
-planq follow-up $REMAINING_ARGS   # (or fixup, fu, fx as appropriate)
+planq follow-up -r $REMAINING_ARGS   # (or fixup, fu, fx as appropriate; omit -r if user passed -r/-n/-q)
 ```
 Look for a line `Marked underway: <type>: <identifier>` in the output. Extract `<type>` and `<identifier>` (the part after `<type>: `).
 
-If the output contains a warning or error instead (no "Marked underway:" line), show the output to the user and stop.
+If the output contains `Created:` or `Queued:` instead of `Marked underway:`, the task was created but not started — show the output to the user and stop (do not execute inline).
+
+If the output contains a warning or error instead (no "Marked underway:", "Created:", or "Queued:" line), show the output to the user and stop.
 
 Step 2 — Get full task details using the identifier:
 ```bash

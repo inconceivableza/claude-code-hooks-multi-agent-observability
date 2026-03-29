@@ -2240,8 +2240,9 @@ usage_archive() {
 }
 usage_run()    { echo "Usage: planq run [N] [--dry-run|-n]"; echo "  Run the next pending task, or task #N if given, then mark it done."; }
 cmd_follow_up() {
-    # follow-up / fu [taskid] [OPTIONS] [desc]  — create subtask + mark underway immediately
+    # follow-up / fu [taskid] [OPTIONS] [desc]  — create subtask
     # fixup    / fx [taskid] [OPTIONS] [desc]  — same but with link-type fix-required
+    # Flags: -r/--run (mark underway), -q/--queue (auto-queue), -n/--no-run (just create, default)
     local default_link_type="${1:-follow-up}"
     shift
 
@@ -2252,18 +2253,25 @@ cmd_follow_up() {
     fi
     shift
 
-    # Peek at remaining args to determine what identifier will be created
+    # Parse remaining args: extract -r/-n/-q (consumed here) and build create_args
+    # (forwarded to cmd_create without the run-mode flags).
     local task_type="unnamed-task" filename="" description="" link_type="$default_link_type"
+    local run_mode="no-run"  # default: just create
     local rest_args=("$@")
+    local create_args=()
     local i=0
     while [ $i -lt ${#rest_args[@]} ]; do
         case "${rest_args[$i]}" in
-            --type|-t) task_type="${rest_args[$((i+1))]:-}"; i=$((i+2)) ;;
-            --file|-f) filename="${rest_args[$((i+1))]:-}"; i=$((i+2)) ;;
-            --link-type|-l) link_type="${rest_args[$((i+1))]:-}"; i=$((i+2)) ;;
+            --run|-r)  run_mode="run"; i=$((i+1)) ;;
+            --no-run|-n) run_mode="no-run"; i=$((i+1)) ;;
+            --queue|-q) run_mode="queue"; i=$((i+1)) ;;
+            --type|-t) task_type="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
+            --file|-f) filename="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
+            --link-type|-l) link_type="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --parent|-p|--auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--auto-queue-plan)
-                i=$((i+1)) ;;
-            *) if [ -z "$description" ]; then description="${rest_args[$i]}"; else description="$description ${rest_args[$i]}"; fi; i=$((i+1)) ;;
+                create_args+=("${rest_args[$i]}"); i=$((i+1)) ;;
+            *) if [ -z "$description" ]; then description="${rest_args[$i]}"; else description="$description ${rest_args[$i]}"; fi
+               create_args+=("${rest_args[$i]}"); i=$((i+1)) ;;
         esac
     done
 
@@ -2283,7 +2291,7 @@ cmd_follow_up() {
     # Capture output to extract actual identifier (handles auto-generated filenames and
     # type inference for -f without -t).
     local create_out
-    create_out="$(cmd_create -p "$parent" -l "$link_type" "$@" 2>&1)" || { printf '%s\n' "$create_out" >&2; return 1; }
+    create_out="$(cmd_create -p "$parent" -l "$link_type" "${create_args[@]}" 2>&1)" || { printf '%s\n' "$create_out" >&2; return 1; }
     printf '%s\n' "$create_out"
 
     # Extract identifier from "Created subtask (...): TYPE: VALUE [+flags]" output line
@@ -2296,38 +2304,59 @@ cmd_follow_up() {
     fi
 
     if [ -z "$ident" ]; then
-        echo "Warning: could not determine task identifier to mark underway" >&2
+        echo "Warning: could not determine task identifier" >&2
         return 0
     fi
 
-    # Mark the new task as underway
+    # Apply the requested run mode
     local task_info line_num task_line
     task_info="$(_find_task_by_identifier "$ident")" || true
     if [ -z "$task_info" ]; then
-        echo "Warning: could not find created task '$ident' to mark underway" >&2
+        echo "Warning: could not find created task '$ident'" >&2
         return 0
     fi
     line_num="${task_info%%	*}"
     task_line="${task_info#*	}"
-    _mark_underway "$line_num" "$task_line"
-    _notify_daemon
-    echo "Marked underway: $task_line"
+
+    case "$run_mode" in
+        run)
+            _mark_underway "$line_num" "$task_line"
+            _notify_daemon
+            echo "Marked underway: $task_line"
+            ;;
+        queue)
+            _mark_auto_queue "$line_num" "$task_line"
+            _notify_daemon
+            echo "Queued: $task_line"
+            ;;
+        no-run)
+            echo "Created: $task_line"
+            ;;
+    esac
 }
 
 usage_follow_up() {
-    echo "Usage: planq follow-up <parent> [-t <type>] [-f <file>] [-l <link-type>] [<desc>]"
-    echo "       planq fixup    <parent> [-t <type>] [-f <file>] [-l <link-type>] [<desc>]"
-    echo "  Create a subtask under <parent> and immediately mark it underway for inline execution."
+    echo "Usage: planq follow-up <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-l <link-type>] [<desc>]"
+    echo "       planq fixup    <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-l <link-type>] [<desc>]"
+    echo "  Create a subtask under <parent>."
     echo "  follow-up / fu  default link type: follow-up"
     echo "  fixup     / fx  default link type: fix-required"
     echo "  <parent>        Parent task number, filename, or description text"
+    echo ""
+    echo "  Run mode (default: -n / --no-run):"
+    echo "    -r, --run      Mark underway immediately (for inline execution by /planq)"
+    echo "    -n, --no-run   Just create the task (default from CLI / planq shell)"
+    echo "    -q, --queue    Mark as auto-queued for the next auto-run"
+    echo ""
     echo "  Accepts same options as 'planq create' (see planq create --help)"
     echo ""
     echo "  Examples:"
     echo "    planq follow-up 3 'Check output format after refactor'"
-    echo "    planq fu 3 -t task -f task-fix-login.md 'Fix login regression'"
-    echo "    planq fixup 3 'Fix the crash in error handler'"
+    echo "    planq fu 3 -r -t task -f task-fix-login.md 'Fix login regression'"
+    echo "    planq fixup 3 -q 'Fix the crash in error handler'"
     echo "    planq fx 5 -l check 'Verify edge case X'"
+    echo ""
+    echo "  From /planq (agent), -r is the default.  From CLI/shell, -n is the default."
 }
 
 usage_create() {
@@ -2401,8 +2430,8 @@ usage() {
     echo "  auto    / A                                    Run auto-queued tasks continuously"
     echo "  create    / c  [-t <type>] [-f <file>] [-p <parent>] [-q] [<desc>]  Add a task or subtask (default type: unnamed-task)
   do        / do [-t <type>] [-f <file>] [-p <parent>] [<desc>]  Create a task and immediately run it"
-    echo "  follow-up / fu <parent> [opts] [<desc>]  Create follow-up subtask + mark underway"
-    echo "  fixup     / fx <parent> [opts] [<desc>]  Create fix-required subtask + mark underway"
+    echo "  follow-up / fu <parent> [opts] [<desc>]  Create follow-up subtask (-r to run, -q to queue)"
+    echo "  fixup     / fx <parent> [opts] [<desc>]  Create fix-required subtask (-r to run, -q to queue)"
     echo "  mark    / m <done|underway|inactive|queue|ac|ap|deferred|auto-commit|stage-commit|manual-commit|no-commit> <N|…>  Mark a task (also: mark:<state>)"
     echo "  delete  / x <N>                                Delete task #N"
     echo "  archive / a [N|…] [--unarchive|-U <N|…>]      Archive done tasks; -a flag on list/show for archive"
