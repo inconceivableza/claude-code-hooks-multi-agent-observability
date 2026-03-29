@@ -199,6 +199,35 @@ _find_task_by_dotted_number() {
     done < "$PLANQ_FILE"
 }
 
+# Given a file line number, compute the dotted task number for that line.
+# Outputs the dotted number (e.g. "5" or "3.2") on stdout; empty if not found.
+_get_dotted_number_for_line() {
+    local target_line="$1"
+    [ ! -f "$PLANQ_FILE" ] && return
+    depth_nums=()
+    local n=0
+    while IFS= read -r line; do
+        n=$((n + 1))
+        local trimmed="${line#"${line%%[![:space:]]*}"}"
+        [ -z "$trimmed" ] && continue
+        [[ "$trimmed" == "# deferred:"* ]] && continue
+        [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* ]] && continue
+        local content depth dotted
+        if   [[ "$trimmed" == "# done: "* ]];           then content="${trimmed#"# done: "}"
+        elif [[ "$trimmed" == "# underway: "* ]];        then content="${trimmed#"# underway: "}"
+        elif [[ "$trimmed" == "# auto-queue: "* ]];      then content="${trimmed#"# auto-queue: "}"
+        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
+        elif [[ "$trimmed" == "# awaiting-plan: "* ]];   then content="${trimmed#"# awaiting-plan: "}"
+        else content="$trimmed"
+        fi
+        _content_depth_step "$content"; _dotted_num_step "$depth"
+        if [ "$n" -eq "$target_line" ]; then
+            printf '%s' "$dotted"
+            return
+        fi
+    done < "$PLANQ_FILE"
+}
+
 # Outputs: line_number TAB task_line  (first pending task only)
 _find_next_task() {
     [ ! -f "$PLANQ_FILE" ] && return
@@ -1525,10 +1554,15 @@ cmd_create() {
             "$PLANQ_FILE" > "$tmp"
         mv "$tmp" "$PLANQ_FILE"
 
-        echo "Created subtask (depth ${child_depth} under ${parent_task_line%% +*}): $task_line"
+        local _created_num
+        _created_num="$(_get_dotted_number_for_line $((insert_after + 1)))"
+        echo "Created subtask #${_created_num} (depth ${child_depth} under ${parent_task_line%% +*}): $task_line"
     else
         printf '%s\n' "$task_line" >> "$PLANQ_FILE"
-        echo "Created: $task_line"
+        local _created_line_count _created_num
+        _created_line_count="$(wc -l < "$PLANQ_FILE")"
+        _created_num="$(_get_dotted_number_for_line "$_created_line_count")"
+        echo "Created #${_created_num}: $task_line"
     fi
     if [ -n "$queue_after" ]; then
         local created_info
@@ -1552,13 +1586,14 @@ cmd_do() {
     create_out="$(cmd_create "$@" 2>&1)" || { printf '%s\n' "$create_out" >&2; return 1; }
     printf '%s\n' "$create_out"
 
-    # Extract the identifier from the "Created: TYPE: VALUE" output line
+    # Extract the identifier from the "Created #N: TYPE: VALUE" output line
     local created_line ident
-    created_line="$(printf '%s\n' "$create_out" | grep '^Created: ' | head -1)"
+    created_line="$(printf '%s\n' "$create_out" | grep '^Created #[0-9]' | head -1)"
     if [ -n "$created_line" ]; then
-        local after_type="${created_line#Created: }"   # "TYPE: VALUE [+flags]"
-        ident="${after_type#*: }"                       # "VALUE [+flags]"
-        ident="${ident%% +*}"                           # strip trailing flags
+        local after_hash="${created_line#Created #}"    # "N: TYPE: VALUE [+flags]"
+        local after_num="${after_hash#*: }"             # "TYPE: VALUE [+flags]"
+        ident="${after_num#*: }"                         # "VALUE [+flags]"
+        ident="${ident%% +*}"                            # strip trailing flags
     fi
     if [ -z "$ident" ]; then
         echo "Error: could not determine task identifier to run" >&2; return 1
@@ -2330,7 +2365,9 @@ cmd_follow_up() {
             echo "Queued: $task_line"
             ;;
         no-run)
-            echo "Created: $task_line"
+            local _fu_num
+            _fu_num="$(_get_dotted_number_for_line "$line_num")"
+            echo "Created #${_fu_num}: $task_line"
             ;;
     esac
 }
