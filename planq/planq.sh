@@ -131,7 +131,7 @@ _list_tasks() {
         elif [[ "$trimmed" == "#"* ]]; then
             continue  # regular comment — skip
         else
-            content="$trimmed"
+            content="$line"
             _content_depth_step "$content"; _dotted_num_step "$depth"
             printf "  ▶  %-5s  %s\n" "$dotted" "$content"
         fi
@@ -166,7 +166,7 @@ _find_task_by_dotted_number() {
         [ -z "$trimmed" ] && continue
         [[ "$trimmed" == "# deferred:"* ]] && continue
         [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* ]] && continue
-        # content: stripped of both leading-spaces and status prefix — for depth/number calc
+        # content: stripped of status prefix — for depth/number calc (preserves depth indent)
         # task_line: stripped of status prefix only — preserves depth indent for callers
         local content task_line depth dotted
         if [[ "$trimmed" == "# done: "* ]]; then           content="${trimmed#"# done: "}";           task_line="${line#"# done: "}"
@@ -174,7 +174,7 @@ _find_task_by_dotted_number() {
         elif [[ "$trimmed" == "# auto-queue: "* ]]; then    content="${trimmed#"# auto-queue: "}";      task_line="${line#"# auto-queue: "}"
         elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"; task_line="${line#"# awaiting-commit: "}"
         elif [[ "$trimmed" == "# awaiting-plan: "* ]]; then content="${trimmed#"# awaiting-plan: "}";   task_line="${line#"# awaiting-plan: "}"
-        else content="$trimmed"; task_line="$line"
+        else content="$line"; task_line="$line"
         fi
         _content_depth_step "$content"; _dotted_num_step "$depth"
         if [ "$dotted" = "$target" ]; then
@@ -218,7 +218,7 @@ _get_dotted_number_for_line() {
         elif [[ "$trimmed" == "# auto-queue: "* ]];      then content="${trimmed#"# auto-queue: "}"
         elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
         elif [[ "$trimmed" == "# awaiting-plan: "* ]];   then content="${trimmed#"# awaiting-plan: "}"
-        else content="$trimmed"
+        else content="$line"
         fi
         _content_depth_step "$content"; _dotted_num_step "$depth"
         if [ "$n" -eq "$target_line" ]; then
@@ -237,7 +237,7 @@ _find_next_task() {
         local trimmed="${line#"${line%%[![:space:]]*}"}"
         [ -z "$trimmed" ] && continue
         [[ "$trimmed" == "#"* ]] && continue  # comments and done lines
-        printf '%d\t%s\n' "$n" "$trimmed"
+        printf '%d\t%s\n' "$n" "$line"
         return
     done < "$PLANQ_FILE"
 }
@@ -251,14 +251,17 @@ _find_task_by_number() {
     local n=0 i=0
     _strip_status_prefix() {
         local t="$1"
-        if [[ "$t" == "# done: "* ]]; then t="${t#"# done: "}"
-        elif [[ "$t" == "# underway: "* ]]; then t="${t#"# underway: "}"
-        elif [[ "$t" == "# auto-queue: "* ]]; then t="${t#"# auto-queue: "}"
-        elif [[ "$t" == "# awaiting-commit: "* ]]; then t="${t#"# awaiting-commit: "}"
-        elif [[ "$t" == "# awaiting-plan: "* ]]; then t="${t#"# awaiting-plan: "}"
-        elif [[ "$t" == "# deferred: "* ]]; then t="${t#"# deferred: "}"
+        # Preserve leading whitespace: strip it, remove status prefix, re-add it
+        local spaces="${t%%[![:space:]]*}"
+        local rest="${t#"$spaces"}"
+        if [[ "$rest" == "# done: "* ]]; then rest="${rest#"# done: "}"
+        elif [[ "$rest" == "# underway: "* ]]; then rest="${rest#"# underway: "}"
+        elif [[ "$rest" == "# auto-queue: "* ]]; then rest="${rest#"# auto-queue: "}"
+        elif [[ "$rest" == "# awaiting-commit: "* ]]; then rest="${rest#"# awaiting-commit: "}"
+        elif [[ "$rest" == "# awaiting-plan: "* ]]; then rest="${rest#"# awaiting-plan: "}"
+        elif [[ "$rest" == "# deferred: "* ]]; then rest="${rest#"# deferred: "}"
         fi
-        printf '%s' "$t"
+        printf '%s' "${spaces}${rest}"
     }
     # Pass 1: non-deferred tasks
     while IFS= read -r line; do
@@ -269,7 +272,8 @@ _find_task_by_number() {
         [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* ]] && continue
         i=$((i + 1))
         if [ "$i" -eq "$target" ]; then
-            printf '%d\t%s\n' "$n" "$(_strip_status_prefix "$trimmed")"
+            # Strip status prefix from $line (not $trimmed) to preserve depth indent
+            printf '%d\t%s\n' "$n" "$(_strip_status_prefix "$line")"
             return
         fi
     done < "$PLANQ_FILE"
@@ -282,7 +286,7 @@ _find_task_by_number() {
         [[ "$trimmed" == "# deferred:"* ]] || continue
         i=$((i + 1))
         if [ "$i" -eq "$target" ]; then
-            printf '%d\t%s\n' "$n" "$(_strip_status_prefix "$trimmed")"
+            printf '%d\t%s\n' "$n" "$(_strip_status_prefix "$line")"
             return
         fi
     done < "$PLANQ_FILE"
@@ -740,7 +744,7 @@ _get_subtasks() {
         elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
         elif [[ "$trimmed" == "# deferred: "* ]];      then content="${trimmed#"# deferred: "}"
         elif [[ "$trimmed" == "#"* ]];                  then continue
-        else content="$trimmed"
+        else content="$line"
         fi
         _content_depth_step "$content"
         [ "$depth" -le "$parent_depth" ] && break
@@ -1540,7 +1544,7 @@ cmd_create() {
             elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
             elif [[ "$trimmed" == "# deferred: "* ]];        then content="${trimmed#"# deferred: "}"
             elif [[ "$trimmed" == "#"* ]];                   then continue
-            else content="$trimmed"
+            else content="$line"
             fi
             _content_depth_step "$content"
             [ "$depth" -le "$parent_depth" ] && break
