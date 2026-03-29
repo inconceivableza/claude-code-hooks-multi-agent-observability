@@ -71,7 +71,7 @@
             class="text-sm bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-slate-400 resize min-h-24 max-h-80"
             placeholder="Describe what Claude should do…"
           />
-          <p v-if="isUnnamedMultiLine" class="text-xs text-amber-400">Multiple lines will be joined with ". " for unnamed tasks — add a filename to use a multi-line task file instead.</p>
+          <p v-if="isUnnamedMultiLine" class="text-xs text-slate-400">Multi-line description will be saved to an auto-generated task file.</p>
         </div>
       </template>
 
@@ -600,6 +600,13 @@ const isUnnamedMultiLine = computed(() =>
   taskType.value === 'task' && !taskSlug.value && description.value.includes('\n')
 )
 
+function autoTaskFilename(desc: string): string {
+  const firstLine = desc.trim().split('\n')[0]
+  const slug = firstLine.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 5).join('-')
+  const rand = Math.floor(Math.random() * 0x10000000).toString(16).padStart(7, '0').slice(0, 7)
+  return `task-${slug}-${rand}.md`
+}
+
 async function onSlugInput() {
   if (!taskFilename.value || !isExistingTaskFile.value) return
   loadingFileContents.value = true
@@ -644,9 +651,12 @@ function submit() {
     if (taskFilename.value) {
       const createFile = !isExistingTaskFile.value
       emit('add', 'task', taskFilename.value, description.value.trim(), createFile, cm, undefined, undefined, parentTaskId, lt, subs)
+    } else if (description.value.includes('\n')) {
+      // Multi-line unnamed task: auto-generate a file-based task
+      const autoFn = autoTaskFilename(description.value)
+      emit('add', 'task', autoFn, description.value.trim(), true, cm, undefined, undefined, parentTaskId, lt, subs)
     } else {
-      const unnamedDesc = description.value.trim().split('\n').map(l => l.trim()).filter(Boolean).join('. ')
-      emit('add', 'unnamed-task', null, unnamedDesc, false, cm, undefined, undefined, parentTaskId, lt, subs)
+      emit('add', 'unnamed-task', null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs)
     }
   } else if (taskType.value === 'plan') {
     emit('add', 'plan', planFilename.value, null, false, cm, undefined, undefined, parentTaskId, lt, subs)

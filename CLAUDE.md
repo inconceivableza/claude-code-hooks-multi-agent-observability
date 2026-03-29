@@ -22,7 +22,7 @@ For display purposes, we want to show the agent ID as "source_app:session_id" wi
 
 Whenever new git fields are needed (e.g. adding author, date, commit body):
 
-1. **Daemon first** (`observability/.claude/planq-daemon.py`): update the git log fetch and parsing so the daemon sends the new field to the server. The daemon is the authoritative source — it runs inside the devcontainer where the repo is always accessible.
+1. **Daemon first** (`observability/planq/planq-daemon.py`): update the git log fetch and parsing so the daemon sends the new field to the server. The daemon is the authoritative source — it runs inside the devcontainer where the repo is always accessible.
 2. **DB** (`container-db.ts`): add the column to the `git_commits` table, add a migration, and update `upsertGitCommits` and `getGitCommits`.
 3. **Server fallback** (`container-routes.ts`): update the fallback git log query (used when the DB is empty) to also fetch and store the new field.
 4. **Serving** (`container-routes.ts`): in any endpoint that returns commit details, prefer the DB-stored value; use a fresh git run only as a fallback for old commits not yet in the DB or when the stored value is absent.

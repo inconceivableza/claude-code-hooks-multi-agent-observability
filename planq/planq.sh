@@ -884,7 +884,8 @@ cmd_run() {
     for arg in "$@"; do
         case "$arg" in
             --dry-run|-n) dry_run=1 ;;
-            [0-9]*)    task_num="$arg" ;;
+            --*|-?) ;;  # skip other flags
+            *)     task_num="$arg" ;;
         esac
     done
 
@@ -928,7 +929,7 @@ cmd_run() {
             if [ ! -f "$task_file" ]; then
                 echo "Error: task file not found: $task_file" >&2; return 1
             fi
-            claude "$(cat "$task_file") When you are done, write a brief summary of what you accomplished to plans/feedback-${task_value}."
+            claude "$(cat "$task_file") REQUIRED FINAL STEP: Write a brief summary of what you accomplished to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
             _mark_done "$line_num" "$task_line"
             ;;
 
@@ -937,7 +938,7 @@ cmd_run() {
             if [ ! -f "$task_file" ]; then
                 echo "Error: plan file not found: $task_file" >&2; return 1
             fi
-            claude "Read plans/$task_value and implement the plan described in it. When done, write a brief summary of what you implemented to plans/feedback-${task_value}."
+            claude "Read plans/$task_value and implement the plan described in it. REQUIRED FINAL STEP: Write a brief summary of what you implemented to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
             _mark_done "$line_num" "$task_line"
             ;;
 
@@ -949,7 +950,7 @@ cmd_run() {
             local prompt target_plan
             prompt="$(cat "$prompt_file")"
             target_plan="${task_value/#make-plan-/plan-}"
-            claude "${prompt} Write the plan to plans/${target_plan}. When done, write a brief summary of the plan you created to plans/feedback-${task_value}."
+            claude "${prompt} Write the plan to plans/${target_plan}. REQUIRED FINAL STEP: Write a brief summary of the plan you created to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
             if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
                 _mark_done "$line_num" "$task_line"
                 # After marking done the line number is now a done line; insert/append the plan
@@ -1302,11 +1303,22 @@ _wait_for_stage_commit() {
     done
 }
 
+_task_slug() {
+    # Generate a slug from the first 5 words of a description string.
+    # Output: lowercase, non-alphanumeric chars removed, words joined by hyphens.
+    printf '%s' "$1" | head -1 | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9 ]//g' | tr -s ' ' ' ' | sed 's/^ //;s/ $//' | cut -d' ' -f1-5 | tr ' ' '-'
+}
+
+_random_hex7() {
+    # Generate a 7-character random hex string (like a short git hash).
+    printf '%07x' $(( (RANDOM << 15 | RANDOM) & 0xFFFFFFF ))
+}
+
 cmd_create() {
-    local task_type="unnamed-task" filename="" description="" auto_commit="" stage_commit="" manual_commit="" add_after="" add_end="" auto_queue_plan="" parent="" link_type="follow-up" queue_after=""
+    local task_type="unnamed-task" task_type_explicit="" filename="" description="" auto_commit="" stage_commit="" manual_commit="" add_after="" add_end="" auto_queue_plan="" parent="" link_type="follow-up" queue_after=""
     while [ $# -gt 0 ]; do
         case "$1" in
-            --type|-t) task_type="${2:-}"; shift 2 ;;
+            --type|-t) task_type="${2:-}"; task_type_explicit="1"; shift 2 ;;
             --file|-f) filename="${2:-}"; shift 2 ;;
             --parent|-p) parent="${2:-}"; shift 2 ;;
             --link-type|-l) link_type="${2:-}"; shift 2 ;;
@@ -1362,6 +1374,30 @@ cmd_create() {
             stage-commit)  stage_commit="1" ;;
             manual-commit) manual_commit="1" ;;
         esac
+    fi
+
+    # If -f was given but -t was not explicitly set, infer type from filename prefix.
+    if [ -n "$filename" ] && [ -z "$task_type_explicit" ]; then
+        case "$filename" in
+            make-plan-*) task_type="make-plan" ;;
+            plan-*)      task_type="plan" ;;
+            investigate-*) task_type="investigate" ;;
+            *)           task_type="task" ;;
+        esac
+    fi
+
+    # If unnamed-task with multi-line description, auto-generate a file-based task.
+    if [ "$task_type" = "unnamed-task" ] && [ -n "$description" ] && printf '%s' "$description" | grep -q $'\n'; then
+        local _slug _rand _auto_fn
+        _slug="$(_task_slug "$description")"
+        _rand="$(_random_hex7)"
+        _auto_fn="task-${_slug}-${_rand}.md"
+        mkdir -p "$PLANS_DIR"
+        printf '%s\n' "$description" > "$PLANS_DIR/$_auto_fn"
+        echo "Auto-generated file for multi-line task: plans/$_auto_fn"
+        filename="$_auto_fn"
+        task_type="task"
+        description=""
     fi
 
     # Normalize filename: auto-prefix with type if bare, auto-append .md
@@ -1510,33 +1546,20 @@ cmd_create() {
 
 cmd_do() {
     # do = create + immediately run the created task
-    cmd_create "$@" || return 1
-    # Find the identifier from the same args cmd_create used
-    local task_type="unnamed-task" filename="" description=""
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --type|-t) task_type="${2:-}"; shift 2 ;;
-            --file|-f) filename="${2:-}"; shift 2 ;;
-            --parent|-p) shift 2 ;;
-            --link-type|-l) shift 2 ;;
-            --auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--auto-queue-plan|--queue|-q) shift ;;
-            *) if [ -z "$description" ]; then description="$1"; else description="$description $1"; fi; shift ;;
-        esac
-    done
-    # After cmd_create, a multiline unnamed-task was converted to a file-based task.
-    # Re-derive the filename the same way cmd_create would.
-    if [ -z "$filename" ] && [ -n "$description" ]; then
-        case "$description" in
-            *$'\n'*)
-                local first_line="${description%%$'\n'*}"
-                local slug
-                slug="$(printf '%s' "$first_line" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 60)"
-                [ -z "$slug" ] && slug="multiline"
-                filename="task-${slug}.md"
-                ;;
-        esac
+    # Capture cmd_create output to extract the actual identifier (handles auto-generated
+    # filenames for multi-line tasks and type inference for -f without -t).
+    local create_out
+    create_out="$(cmd_create "$@" 2>&1)" || { printf '%s\n' "$create_out" >&2; return 1; }
+    printf '%s\n' "$create_out"
+
+    # Extract the identifier from the "Created: TYPE: VALUE" output line
+    local created_line ident
+    created_line="$(printf '%s\n' "$create_out" | grep '^Created: ' | head -1)"
+    if [ -n "$created_line" ]; then
+        local after_type="${created_line#Created: }"   # "TYPE: VALUE [+flags]"
+        ident="${after_type#*: }"                       # "VALUE [+flags]"
+        ident="${ident%% +*}"                           # strip trailing flags
     fi
-    local ident="${filename:-$description}"
     if [ -z "$ident" ]; then
         echo "Error: could not determine task identifier to run" >&2; return 1
     fi
@@ -1722,10 +1745,10 @@ _run_task_inline() {
                 _notify_daemon
                 return 1
             fi
-            _invoke_claude "$(cat "$task_file") When you are done, write a brief summary of what you accomplished to plans/feedback-${task_value}."
+            _invoke_claude "$(cat "$task_file") REQUIRED FINAL STEP: Write a brief summary of what you accomplished to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
             ;;
         plan)
-            _invoke_claude "Read plans/$task_value and implement the plan described in it. When done, write a brief summary of what you implemented to plans/feedback-${task_value}."
+            _invoke_claude "Read plans/$task_value and implement the plan described in it. REQUIRED FINAL STEP: Write a brief summary of what you implemented to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
             ;;
         make-plan)
             local prompt_file="$PLANS_DIR/$task_value"
@@ -1738,7 +1761,7 @@ _run_task_inline() {
             local prompt target_plan
             prompt="$(cat "$prompt_file")"
             target_plan="${task_value/#make-plan-/plan-}"
-            _invoke_claude "${prompt} Write the plan to plans/${target_plan}. When done, write a brief summary of the plan you created to plans/feedback-${task_value}."
+            _invoke_claude "${prompt} Write the plan to plans/${target_plan}. REQUIRED FINAL STEP: Write a brief summary of the plan you created to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
             if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
                 _mark_done "$line_num" "$task_line"
                 local new_plan_task="plan: ${target_plan}"
@@ -2257,28 +2280,20 @@ cmd_follow_up() {
     fi
 
     # Create the subtask under the parent
-    cmd_create -p "$parent" -l "$link_type" "$@" || return 1
+    # Capture output to extract actual identifier (handles auto-generated filenames and
+    # type inference for -f without -t).
+    local create_out
+    create_out="$(cmd_create -p "$parent" -l "$link_type" "$@" 2>&1)" || { printf '%s\n' "$create_out" >&2; return 1; }
+    printf '%s\n' "$create_out"
 
-    # Determine identifier for the newly created task.
-    # If cmd_create converted a multiline unnamed-task to a file-based task,
-    # the filename won't match our local vars.  Re-derive it.
-    if [ -z "$filename" ] && [ "$task_type" = "unnamed-task" ] && [ -n "$description" ]; then
-        case "$description" in
-            *$'\n'*)
-                local first_line="${description%%$'\n'*}"
-                local slug
-                slug="$(printf '%s' "$first_line" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | head -c 60)"
-                [ -z "$slug" ] && slug="multiline"
-                filename="task-${slug}.md"
-                task_type="task"
-                ;;
-        esac
+    # Extract identifier from "Created subtask (...): TYPE: VALUE [+flags]" output line
+    local created_line ident
+    created_line="$(printf '%s\n' "$create_out" | grep '^Created subtask ' | head -1)"
+    if [ -n "$created_line" ]; then
+        local after_paren="${created_line##*): }"   # "TYPE: VALUE [+flags]"
+        ident="${after_paren#*: }"                   # "VALUE [+flags]"
+        ident="${ident%% +*}"                        # strip trailing flags
     fi
-    local ident
-    case "$task_type" in
-        task|plan|make-plan) ident="$filename" ;;
-        *) ident="$description" ;;
-    esac
 
     if [ -z "$ident" ]; then
         echo "Warning: could not determine task identifier to mark underway" >&2
