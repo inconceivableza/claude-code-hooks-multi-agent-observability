@@ -1103,46 +1103,36 @@ def _run_connection():
 
 _planq_file_lock = threading.Lock()
 
-_STATUS_PREFIX_MAP = {
-    'done': '# done: ',
-    'underway': '# underway: ',
-    'auto-queue': '# auto-queue: ',
-    'awaiting-commit': '# awaiting-commit: ',
-    'awaiting-plan': '# awaiting-plan: ',
-    'deferred': '# deferred: ',
-    'pending': '',
-}
-_STATUS_PREFIXES = tuple(v for v in _STATUS_PREFIX_MAP.values() if v)
-
-
-def _strip_status_prefix(line: str) -> str:
-    """Remove leading status comment prefix from a planq-order line."""
-    s = line.strip()
-    for pfx in _STATUS_PREFIXES:
-        if s.startswith(pfx):
-            return s[len(pfx):]
-    return s
-
-
 import re as _re
 
-def _strip_depth_prefix(s: str) -> tuple[int, str]:
-    """Strip the optional depth prefix '(  )*- ' from a string (after status prefix removed).
-    Returns (depth, rest) where depth >= 1 if a prefix was found, else 0."""
-    m = _re.match(r'^((?:  )*)- (.*)', s)
-    if m:
-        depth = len(m.group(1)) // 2 + 1
-        return depth, m.group(2)
-    return 0, s
+# V2 format: "(  )*- [status] type: value +flags"
+_V2_VALID_STATUSES = {'done', 'underway', 'auto-queue', 'awaiting-commit', 'awaiting-plan', 'deferred'}
+_V2_LINE_RE = _re.compile(r'^( *)- (?:\[([a-z-]+)\] )?(.*)$')
+
+
+def _v2_parse_line(line: str) -> tuple[str, str, str] | None:
+    """Parse a V2 planq line. Returns (indent, status, task_part) or None for comments/blanks.
+    status is '' for pending tasks. task_part is 'type: value +flags'."""
+    s = line.rstrip('\n')
+    m = _V2_LINE_RE.match(s)
+    if not m:
+        return None
+    return m.group(1), m.group(2) or '', m.group(3)
+
+
+def _v2_reconstruct(indent: str, status: str, task_part: str) -> str:
+    """Reconstruct a V2 line from parts."""
+    if status:
+        return f'{indent}- [{status}] {task_part}\n'
+    return f'{indent}- {task_part}\n'
 
 
 def _task_key_from_line(line: str) -> str | None:
-    """Extract the canonical task key (filename or description) from a planq-order line."""
-    after_status = _strip_status_prefix(line)
-    if after_status.startswith('#') or not after_status:
+    """Extract the canonical task key (filename or description) from a V2 planq-order line."""
+    parsed = _v2_parse_line(line)
+    if not parsed:
         return None
-    # Strip depth prefix (e.g. "- " or "  - ") before parsing task type
-    _depth, raw = _strip_depth_prefix(after_status)
+    _indent, _status, raw = parsed
     colon = raw.find(':')
     if colon < 0:
         return None
@@ -1205,14 +1195,16 @@ def _write_planq_lines(lines: list[str]) -> None:
 
 
 def _apply_update_status(task_key: str, new_status: str) -> None:
-    prefix = _STATUS_PREFIX_MAP.get(new_status, '')
+    if new_status == 'pending':
+        new_status = ''
     with _planq_file_lock:
         lines = _read_planq_lines()
         new_lines = []
         for line in lines:
-            if _task_key_from_line(line) == task_key:
-                raw = _strip_status_prefix(line).rstrip('\n')
-                new_lines.append(prefix + raw + '\n')
+            parsed = _v2_parse_line(line)
+            if parsed and _task_key_from_line(line) == task_key:
+                indent, _old_status, task_part = parsed
+                new_lines.append(_v2_reconstruct(indent, new_status, task_part))
             else:
                 new_lines.append(line)
         _write_planq_lines(new_lines)
@@ -1224,20 +1216,15 @@ def _apply_update_commit_mode(task_key: str, new_mode: str) -> None:
         lines = _read_planq_lines()
         new_lines = []
         for line in lines:
-            if _task_key_from_line(line) == task_key:
-                stripped = line.strip()
-                status_prefix = ''
-                for pfx in _STATUS_PREFIXES:
-                    if stripped.startswith(pfx):
-                        status_prefix = pfx
-                        stripped = stripped[len(pfx):]
-                        break
+            parsed = _v2_parse_line(line)
+            if parsed and _task_key_from_line(line) == task_key:
+                indent, status, task_part = parsed
                 # Strip existing commit mode flags
                 for flag in (' +auto-commit', ' +stage-commit', ' +manual-commit'):
-                    stripped = stripped.replace(flag, '')
-                stripped = stripped.rstrip()
+                    task_part = task_part.replace(flag, '')
+                task_part = task_part.rstrip()
                 new_flag = flag_map.get(new_mode, '')
-                new_lines.append(status_prefix + stripped + new_flag + '\n')
+                new_lines.append(_v2_reconstruct(indent, status, task_part + new_flag))
             else:
                 new_lines.append(line)
         _write_planq_lines(new_lines)
@@ -1250,24 +1237,25 @@ _REVIEW_STATUSES = frozenset({
 
 
 def _apply_update_review_status(task_key: str, new_status: str) -> None:
-    """Set or remove the +<review-status> suffix on a planq-order line."""
+    """Set or remove the +<review-status> suffix on a V2 planq-order line."""
     if new_status not in _REVIEW_STATUSES:
         return
     with _planq_file_lock:
         lines = _read_planq_lines()
         new_lines = []
         for line in lines:
-            if _task_key_from_line(line) == task_key:
-                stripped = line.strip()
+            parsed = _v2_parse_line(line)
+            if parsed and _task_key_from_line(line) == task_key:
+                indent, status, task_part = parsed
                 # Remove existing review status suffix if present
                 for rs in ('retry-later', 'ready-for-merge', 'revert-scheduled', 'fix-scheduled',
                            'has-issues', 'follow-up', 'cancelled', 'testing', 'passed', 'merged', 'ready'):
-                    if stripped.endswith(f' +{rs}'):
-                        stripped = stripped[:-len(f' +{rs}')]
+                    if task_part.endswith(f' +{rs}'):
+                        task_part = task_part[:-len(f' +{rs}')]
                         break
                 if new_status and new_status != 'none':
-                    stripped = stripped.rstrip() + f' +{new_status}'
-                new_lines.append(stripped + '\n')
+                    task_part = task_part.rstrip() + f' +{new_status}'
+                new_lines.append(_v2_reconstruct(indent, status, task_part))
             else:
                 new_lines.append(line)
         _write_planq_lines(new_lines)
@@ -1279,24 +1267,19 @@ def _apply_update_description(task_key: str, new_desc: str) -> None:
         lines = _read_planq_lines()
         new_lines = []
         for line in lines:
-            if _task_key_from_line(line) == task_key:
-                stripped = line.strip()
-                status_prefix = ''
-                for pfx in _STATUS_PREFIXES:
-                    if stripped.startswith(pfx):
-                        status_prefix = pfx
-                        stripped = stripped[len(pfx):]
-                        break
-                colon = stripped.find(':')
+            parsed = _v2_parse_line(line)
+            if parsed and _task_key_from_line(line) == task_key:
+                indent, status, task_part = parsed
+                colon = task_part.find(':')
                 if colon >= 0:
-                    task_type = stripped[:colon + 1]
-                    rest = stripped[colon + 1:].strip()
+                    task_type = task_part[:colon + 1]
+                    rest = task_part[colon + 1:].strip()
                     # Preserve flags after the description
                     flags = ''
                     for flag in (' +auto-commit', ' +stage-commit', ' +manual-commit'):
                         if flag in rest:
                             flags += flag
-                    new_lines.append(status_prefix + task_type + ' ' + new_desc + flags + '\n')
+                    new_lines.append(_v2_reconstruct(indent, status, task_type + ' ' + new_desc + flags))
                 else:
                     new_lines.append(line)
             else:
@@ -1374,7 +1357,7 @@ def _apply_add_task(payload: dict) -> None:
     if review_status and review_status != 'none' and review_status in _REVIEW_STATUSES:
         value += f' +{review_status}'
 
-    status_prefix = _STATUS_PREFIX_MAP.get(status, '')
+    v2_status = '' if status == 'pending' else (status or '')
 
     with _planq_file_lock:
         lines = _read_planq_lines()
@@ -1386,14 +1369,15 @@ def _apply_add_task(payload: dict) -> None:
             for i, raw_line in enumerate(lines):
                 if _task_key_from_line(raw_line) == parent_task_key:
                     parent_idx = i
-                    after_status = _strip_status_prefix(raw_line)
-                    parent_depth, _ = _strip_depth_prefix(after_status)
+                    parsed = _v2_parse_line(raw_line)
+                    if parsed:
+                        parent_depth = len(parsed[0]) // 2
                     break
 
             if parent_idx is not None:
                 child_depth = parent_depth + 1
-                depth_prefix = '  ' * (child_depth - 1) + '- '
-                line = status_prefix + depth_prefix + task_type + ': ' + value + '\n'
+                child_indent = '  ' * child_depth
+                line = _v2_reconstruct(child_indent, v2_status, task_type + ': ' + value)
 
                 # Find insertion point: after last descendant of parent's subtree
                 insert_after = parent_idx
@@ -1401,8 +1385,10 @@ def _apply_add_task(payload: dict) -> None:
                     raw = lines[j]
                     if not raw.strip():
                         continue
-                    after_st = _strip_status_prefix(raw)
-                    d, _ = _strip_depth_prefix(after_st)
+                    p = _v2_parse_line(raw)
+                    if not p:
+                        continue
+                    d = len(p[0]) // 2
                     if d <= parent_depth:
                         break
                     insert_after = j
@@ -1412,7 +1398,7 @@ def _apply_add_task(payload: dict) -> None:
                 return
 
         # No parent or parent not found: append at end
-        line = status_prefix + task_type + ': ' + value + '\n'
+        line = _v2_reconstruct('', v2_status, task_type + ': ' + value)
         lines.append(line)
         _write_planq_lines(lines)
 

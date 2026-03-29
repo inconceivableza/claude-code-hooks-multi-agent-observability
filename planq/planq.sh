@@ -40,20 +40,77 @@ PLANQ_FILE="$(_get_planq_file)"
 ARCHIVE_DIR="$PLANS_DIR/archive"
 HISTORY_FILE="$ARCHIVE_DIR/planq-history.txt"
 
+# ── V1 → V2 format migration ────────────────────────────────────────────────
+# V1: "# done: task: foo.md", "# underway: - task: bar.md", "  - task: baz.md"
+# V2: "- [done] task: foo.md", "  - [underway] task: bar.md", "    - task: baz.md"
+_migrate_v1_to_v2() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+    # Detect V1: any line starting with "# <valid-status>: "
+    grep -qE '^# (done|underway|auto-queue|awaiting-commit|awaiting-plan|deferred): ' "$file" || return 0
+
+    # Back up the original
+    local dir base
+    dir="$(dirname "$file")"
+    base="$(basename "$file")"
+    cp "$file" "${dir}/${base%.txt}-v1.bak"
+
+    local tmp
+    tmp="$(mktemp)"
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip blank lines and pure comments
+        if [ -z "$line" ] || [[ "$line" == "#"* && ! "$line" == "# done: "* && ! "$line" == "# underway: "* && ! "$line" == "# auto-queue: "* && ! "$line" == "# awaiting-commit: "* && ! "$line" == "# awaiting-plan: "* && ! "$line" == "# deferred: "* ]]; then
+            printf '%s\n' "$line" >> "$tmp"
+            continue
+        fi
+        local status="" content=""
+        if   [[ "$line" == "# done: "* ]];           then status="done";           content="${line#"# done: "}"
+        elif [[ "$line" == "# underway: "* ]];        then status="underway";       content="${line#"# underway: "}"
+        elif [[ "$line" == "# auto-queue: "* ]];      then status="auto-queue";     content="${line#"# auto-queue: "}"
+        elif [[ "$line" == "# awaiting-commit: "* ]]; then status="awaiting-commit"; content="${line#"# awaiting-commit: "}"
+        elif [[ "$line" == "# awaiting-plan: "* ]];   then status="awaiting-plan";  content="${line#"# awaiting-plan: "}"
+        elif [[ "$line" == "# deferred: "* ]];        then status="deferred";       content="${line#"# deferred: "}"
+        else content="$line"
+        fi
+        # content is now e.g. "- task: bar.md" (subtask) or "task: foo.md" (top-level)
+        # or "  - task: baz.md" (depth-2 subtask)
+        # Convert old depth encoding to V2 indentation:
+        #   "task: ..."       → depth 0 → "- ..."
+        #   "- task: ..."     → depth 1 → "  - ..."
+        #   "  - task: ..."   → depth 2 → "    - ..."
+        local spaces="${content%%[![:space:]]*}"
+        local after="${content#"$spaces"}"
+        local indent="" task_part=""
+        if [[ "$after" == "- "* ]]; then
+            # Old-style subtask: spaces + "- " + rest
+            local old_depth=$(( ${#spaces} / 2 + 1 ))
+            indent="$(printf '%*s' $(( old_depth * 2 )) '')"
+            task_part="${after#"- "}"
+        else
+            # Top-level task (no "- " prefix)
+            indent=""
+            task_part="$after"
+        fi
+        if [ -n "$status" ]; then
+            printf '%s\n' "${indent}- [${status}] ${task_part}" >> "$tmp"
+        else
+            printf '%s\n' "${indent}- ${task_part}" >> "$tmp"
+        fi
+    done < "$file"
+    mv "$tmp" "$file"
+}
+
+# Migrate planq files on startup
+_migrate_v1_to_v2 "$PLANQ_FILE"
+[ -f "$HISTORY_FILE" ] && _migrate_v1_to_v2 "$HISTORY_FILE"
+
 # ── Parse helpers ─────────────────────────────────────────────────────────────
 
-# Extract the nesting depth from a task content string (after status prefix stripped).
-# Depth-0 tasks start directly with a task type ("task:", "plan:", etc.).
-# Depth-1 subtasks start with "- "; depth-2 with "  - "; etc.
+# Extract the nesting depth from a V2 line. depth = indent / 2.
 _content_depth() {
     local content="$1"
     local spaces="${content%%[![:space:]]*}"
-    local after="${content#"$spaces"}"
-    if [[ "$after" == "- "* ]]; then
-        printf '%d' $(( ${#spaces} / 2 + 1 ))
-    else
-        printf '%d' 0
-    fi
+    printf '%d' $(( ${#spaces} / 2 ))
 }
 
 # Build a dotted number string ("1", "2.1", "3.1.2", …) from the depth_nums array,
@@ -83,17 +140,49 @@ _dotted_num_step() {
     dotted="$_r"
 }
 
-# Compute depth of a content string and store in $depth (caller's scope).
+# Compute depth of a line and store in $depth (caller's scope).
+# V2 format: all task lines are "(  )*- [status] type: value", depth = indent/2.
 # No command substitution — sets $depth directly.
 _content_depth_step() {
-    local _content="$1" _spaces _after
+    local _content="$1" _spaces
     _spaces="${_content%%[![:space:]]*}"
-    _after="${_content#"$_spaces"}"
-    if [[ "$_after" == "- "* ]]; then
-        depth=$(( ${#_spaces} / 2 + 1 ))
-    else
-        depth=0
+    depth=$(( ${#_spaces} / 2 ))
+}
+
+# V2 status values that appear in brackets
+_V2_STATUSES="done|underway|auto-queue|awaiting-commit|awaiting-plan|deferred"
+
+# Extract status from a V2 line. Sets _v2_status in caller scope ("" if pending).
+# Input: the part after "- ", e.g. "[done] task: foo.md" or "task: foo.md"
+_v2_extract_status() {
+    local _after_dash="$1"
+    _v2_status=""
+    if [[ "$_after_dash" == "["* ]]; then
+        _v2_status="${_after_dash%%]*}"
+        _v2_status="${_v2_status#"["}"
     fi
+}
+
+# Strip V2 line to just "type: value +flags" (no indent, no "- ", no "[status] ").
+# Sets _v2_task_part in caller scope.
+_v2_strip_line() {
+    local _line="$1"
+    local _spaces="${_line%%[![:space:]]*}"
+    local _rest="${_line#"$_spaces"}"
+    # Strip "- "
+    _rest="${_rest#"- "}"
+    # Strip "[status] " if present
+    if [[ "$_rest" == "["* ]]; then
+        _rest="${_rest#*"] "}"
+    fi
+    _v2_task_part="$_rest"
+}
+
+# Get the indent prefix for a V2 line (everything before "- ")
+_v2_indent() {
+    local _line="$1"
+    local _spaces="${_line%%[![:space:]]*}"
+    printf '%s' "$_spaces"
 }
 
 _list_tasks() {
@@ -104,52 +193,41 @@ _list_tasks() {
     depth_nums=()
     # Pass 1: all non-deferred tasks
     while IFS= read -r line; do
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# deferred:"* ]] && continue  # skip deferred in pass 1
-        local content depth dotted
-        if [[ "$trimmed" == "# done:"* ]]; then
-            content="${trimmed#"# done: "}"
-            _content_depth_step "$content"; _dotted_num_step "$depth"
-            printf "  \033[2m✅ %-5s  %s\033[0m\n" "$dotted" "$content"
-        elif [[ "$trimmed" == "# underway:"* ]]; then
-            content="${trimmed#"# underway: "}"
-            _content_depth_step "$content"; _dotted_num_step "$depth"
-            printf "  \033[33m⏳ %-5s  %s\033[0m\n" "$dotted" "$content"
-        elif [[ "$trimmed" == "# auto-queue:"* ]]; then
-            content="${trimmed#"# auto-queue: "}"
-            _content_depth_step "$content"; _dotted_num_step "$depth"
-            printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$dotted" "$content"
-        elif [[ "$trimmed" == "# awaiting-commit:"* ]]; then
-            content="${trimmed#"# awaiting-commit: "}"
-            _content_depth_step "$content"; _dotted_num_step "$depth"
-            printf "  \033[35m💾 %-5s  %s\033[0m\n" "$dotted" "$content"
-        elif [[ "$trimmed" == "# awaiting-plan:"* ]]; then
-            content="${trimmed#"# awaiting-plan: "}"
-            _content_depth_step "$content"; _dotted_num_step "$depth"
-            printf "  \033[36m📋 %-5s  %s\033[0m\n" "$dotted" "$content"
-        elif [[ "$trimmed" == "#"* ]]; then
-            continue  # regular comment — skip
-        else
-            content="$line"
-            _content_depth_step "$content"; _dotted_num_step "$depth"
-            printf "  ▶  %-5s  %s\n" "$dotted" "$content"
-        fi
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue  # pure comments
+        # V2: extract status first to skip deferred before numbering
+        local after_dash="${line#*"- "}" _v2_status _v2_task_part
+        _v2_extract_status "$after_dash"
+        [ "$_v2_status" = "deferred" ] && continue
+        local depth dotted
+        _content_depth_step "$line"; _dotted_num_step "$depth"
+        _v2_strip_line "$line"
+        local display="$_v2_task_part"
+        case "$_v2_status" in
+            done)             printf "  \033[2m✅ %-5s  %s\033[0m\n" "$dotted" "$display" ;;
+            underway)         printf "  \033[33m⏳ %-5s  %s\033[0m\n" "$dotted" "$display" ;;
+            auto-queue)       printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$dotted" "$display" ;;
+            awaiting-commit)  printf "  \033[35m💾 %-5s  %s\033[0m\n" "$dotted" "$display" ;;
+            awaiting-plan)    printf "  \033[36m📋 %-5s  %s\033[0m\n" "$dotted" "$display" ;;
+            *)                printf "  ▶  %-5s  %s\n" "$dotted" "$display" ;;
+        esac
     done < "$PLANQ_FILE"
     # Pass 2: deferred tasks at the bottom (grayed out)
     local deferred_count=0
     while IFS= read -r line; do
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# deferred:"* ]] || continue
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        local after_dash="${line#*"- "}" _v2_status
+        _v2_extract_status "$after_dash"
+        [ "$_v2_status" = "deferred" ] || continue
         if [ "$deferred_count" -eq 0 ]; then
             printf "  \033[2m--- deferred ---\033[0m\n"
         fi
-        local content depth dotted
-        content="${trimmed#"# deferred: "}"
-        _content_depth_step "$content"; _dotted_num_step "$depth"
+        local depth dotted _v2_task_part
+        _content_depth_step "$line"; _dotted_num_step "$depth"
+        _v2_strip_line "$line"
         deferred_count=$((deferred_count + 1))
-        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$content"
+        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part"
     done < "$PLANQ_FILE"
 }
 
@@ -162,38 +240,31 @@ _find_task_by_dotted_number() {
     # Pass 1: non-deferred tasks
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# deferred:"* ]] && continue
-        [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* ]] && continue
-        # content: stripped of status prefix — for depth/number calc (preserves depth indent)
-        # task_line: stripped of status prefix only — preserves depth indent for callers
-        local content task_line depth dotted
-        if [[ "$trimmed" == "# done: "* ]]; then           content="${trimmed#"# done: "}";           task_line="${line#"# done: "}"
-        elif [[ "$trimmed" == "# underway: "* ]]; then      content="${trimmed#"# underway: "}";        task_line="${line#"# underway: "}"
-        elif [[ "$trimmed" == "# auto-queue: "* ]]; then    content="${trimmed#"# auto-queue: "}";      task_line="${line#"# auto-queue: "}"
-        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"; task_line="${line#"# awaiting-commit: "}"
-        elif [[ "$trimmed" == "# awaiting-plan: "* ]]; then content="${trimmed#"# awaiting-plan: "}";   task_line="${line#"# awaiting-plan: "}"
-        else content="$line"; task_line="$line"
-        fi
-        _content_depth_step "$content"; _dotted_num_step "$depth"
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        local after_dash="${line#*"- "}" _v2_status
+        _v2_extract_status "$after_dash"
+        [ "$_v2_status" = "deferred" ] && continue
+        local depth dotted
+        _content_depth_step "$line"; _dotted_num_step "$depth"
         if [ "$dotted" = "$target" ]; then
-            printf '%d\t%s\n' "$n" "$task_line"
+            printf '%d\t%s\n' "$n" "$line"
             return
         fi
     done < "$PLANQ_FILE"
     # Pass 2: deferred tasks
-    n=0
+    n=0; depth_nums=()
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# deferred:"* ]] || continue
-        local content task_line depth dotted
-        content="${trimmed#"# deferred: "}"; task_line="${line#"# deferred: "}"
-        _content_depth_step "$content"; _dotted_num_step "$depth"
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        local after_dash="${line#*"- "}" _v2_status
+        _v2_extract_status "$after_dash"
+        [ "$_v2_status" = "deferred" ] || continue
+        local depth dotted
+        _content_depth_step "$line"; _dotted_num_step "$depth"
         if [ "$dotted" = "$target" ]; then
-            printf '%d\t%s\n' "$n" "$task_line"
+            printf '%d\t%s\n' "$n" "$line"
             return
         fi
     done < "$PLANQ_FILE"
@@ -208,19 +279,13 @@ _get_dotted_number_for_line() {
     local n=0
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# deferred:"* ]] && continue
-        [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* ]] && continue
-        local content depth dotted
-        if   [[ "$trimmed" == "# done: "* ]];           then content="${trimmed#"# done: "}"
-        elif [[ "$trimmed" == "# underway: "* ]];        then content="${trimmed#"# underway: "}"
-        elif [[ "$trimmed" == "# auto-queue: "* ]];      then content="${trimmed#"# auto-queue: "}"
-        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
-        elif [[ "$trimmed" == "# awaiting-plan: "* ]];   then content="${trimmed#"# awaiting-plan: "}"
-        else content="$line"
-        fi
-        _content_depth_step "$content"; _dotted_num_step "$depth"
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        local after_dash="${line#*"- "}" _v2_status
+        _v2_extract_status "$after_dash"
+        [ "$_v2_status" = "deferred" ] && continue
+        local depth dotted
+        _content_depth_step "$line"; _dotted_num_step "$depth"
         if [ "$n" -eq "$target_line" ]; then
             printf '%s' "$dotted"
             return
@@ -228,52 +293,40 @@ _get_dotted_number_for_line() {
     done < "$PLANQ_FILE"
 }
 
-# Outputs: line_number TAB task_line  (first pending task only)
+# Outputs: line_number TAB line  (first pending task only — no [status] bracket)
 _find_next_task() {
     [ ! -f "$PLANQ_FILE" ] && return
     local n=0
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "#"* ]] && continue  # comments and done lines
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        # V2: pending = no [status] bracket after "- "
+        local after_dash="${line#*"- "}" _v2_status
+        _v2_extract_status "$after_dash"
+        [ -z "$_v2_status" ] || continue
         printf '%d\t%s\n' "$n" "$line"
         return
     done < "$PLANQ_FILE"
 }
 
-# Outputs: line_number TAB task_line  for the task at visible position N (1-based)
-# Visible position counts all non-comment, non-blank lines (pending and done).
-# Deferred tasks are numbered after all non-deferred tasks (matching _list_tasks order).
+# Outputs: line_number TAB line  for the task at visible position N (1-based)
+# V2: returns the full line (with indent, "- ", "[status]")
 _find_task_by_number() {
     local target="$1"
     [ ! -f "$PLANQ_FILE" ] && return
     local n=0 i=0
-    _strip_status_prefix() {
-        local t="$1"
-        # Preserve leading whitespace: strip it, remove status prefix, re-add it
-        local spaces="${t%%[![:space:]]*}"
-        local rest="${t#"$spaces"}"
-        if [[ "$rest" == "# done: "* ]]; then rest="${rest#"# done: "}"
-        elif [[ "$rest" == "# underway: "* ]]; then rest="${rest#"# underway: "}"
-        elif [[ "$rest" == "# auto-queue: "* ]]; then rest="${rest#"# auto-queue: "}"
-        elif [[ "$rest" == "# awaiting-commit: "* ]]; then rest="${rest#"# awaiting-commit: "}"
-        elif [[ "$rest" == "# awaiting-plan: "* ]]; then rest="${rest#"# awaiting-plan: "}"
-        elif [[ "$rest" == "# deferred: "* ]]; then rest="${rest#"# deferred: "}"
-        fi
-        printf '%s' "${spaces}${rest}"
-    }
     # Pass 1: non-deferred tasks
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# deferred:"* ]] && continue
-        [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* ]] && continue
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        local after_dash="${line#*"- "}" _v2_status
+        _v2_extract_status "$after_dash"
+        [ "$_v2_status" = "deferred" ] && continue
         i=$((i + 1))
         if [ "$i" -eq "$target" ]; then
-            # Strip status prefix from $line (not $trimmed) to preserve depth indent
-            printf '%d\t%s\n' "$n" "$(_strip_status_prefix "$line")"
+            printf '%d\t%s\n' "$n" "$line"
             return
         fi
     done < "$PLANQ_FILE"
@@ -281,12 +334,14 @@ _find_task_by_number() {
     n=0
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# deferred:"* ]] || continue
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        local after_dash="${line#*"- "}" _v2_status
+        _v2_extract_status "$after_dash"
+        [ "$_v2_status" = "deferred" ] || continue
         i=$((i + 1))
         if [ "$i" -eq "$target" ]; then
-            printf '%d\t%s\n' "$n" "$(_strip_status_prefix "$line")"
+            printf '%d\t%s\n' "$n" "$line"
             return
         fi
     done < "$PLANQ_FILE"
@@ -303,22 +358,13 @@ _find_task_by_identifier() {
     local n=0
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* && "$trimmed" != "# auto-queue:"* && "$trimmed" != "# awaiting-commit:"* && "$trimmed" != "# awaiting-plan:"* && "$trimmed" != "# deferred:"* ]] && continue
-        # Strip status prefix from line (not trimmed) to preserve depth indent ("  - ").
-        # Use trimmed for prefix detection; strip from line so leading spaces survive.
-        local task_line
-        if [[ "$trimmed" == "# done: "* ]]; then           task_line="${line#"# done: "}"
-        elif [[ "$trimmed" == "# underway: "* ]]; then      task_line="${line#"# underway: "}"
-        elif [[ "$trimmed" == "# auto-queue: "* ]]; then    task_line="${line#"# auto-queue: "}"
-        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then task_line="${line#"# awaiting-commit: "}"
-        elif [[ "$trimmed" == "# awaiting-plan: "* ]]; then task_line="${line#"# awaiting-plan: "}"
-        elif [[ "$trimmed" == "# deferred: "* ]]; then      task_line="${line#"# deferred: "}"
-        else task_line="$line"
-        fi
-        local task_value="${task_line#*: }"
-        # Strip commit/plan flags from comparison (flags, not part of filename/description)
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        # V2: extract task_part (type: value +flags) for comparison
+        local _v2_task_part
+        _v2_strip_line "$line"
+        local task_value="${_v2_task_part#*: }"
+        # Strip commit/plan flags from comparison
         local cmp_value="${task_value% +auto-commit}"
         cmp_value="${cmp_value% +stage-commit}"
         cmp_value="${cmp_value% +manual-commit}"
@@ -326,41 +372,40 @@ _find_task_by_identifier() {
         cmp_value="${cmp_value% +add-end}"
         cmp_value="${cmp_value% +auto-queue-plan}"
         if [ "$cmp_value" = "$ident" ] || [ "$task_value" = "$ident" ]; then
-            printf '%d\t%s\n' "$n" "$task_line"
+            printf '%d\t%s\n' "$n" "$line"
             return
         fi
     done < "$PLANQ_FILE"
 }
 
-_mark_done() {
-    local line_num="$1" original_line="$2"
+# V2 _mark helpers: reconstruct line as "{indent}- [status] {task_part}"
+# original_line is the full V2 line (with indent and "- " and optional "[status] ")
+_mark_with_status() {
+    local line_num="$1" original_line="$2" new_status="$3"
+    local indent task_part
+    indent="$(_v2_indent "$original_line")"
+    _v2_strip_line "$original_line"; task_part="$_v2_task_part"
+    local new_line
+    if [ -n "$new_status" ]; then
+        new_line="${indent}- [${new_status}] ${task_part}"
+    else
+        new_line="${indent}- ${task_part}"
+    fi
     local tmp
     tmp="$(mktemp)"
-    awk -v n="$line_num" -v orig="$original_line" \
-        'NR == n { print "# done: " orig; next } { print }' \
+    awk -v n="$line_num" -v newline="$new_line" \
+        'NR == n { print newline; next } { print }' \
         "$PLANQ_FILE" > "$tmp"
     mv "$tmp" "$PLANQ_FILE"
 }
 
-_mark_underway() {
-    local line_num="$1" original_line="$2"
-    local tmp
-    tmp="$(mktemp)"
-    awk -v n="$line_num" -v orig="$original_line" \
-        'NR == n { print "# underway: " orig; next } { print }' \
-        "$PLANQ_FILE" > "$tmp"
-    mv "$tmp" "$PLANQ_FILE"
-}
-
-_mark_inactive() {
-    local line_num="$1" original_line="$2"
-    local tmp
-    tmp="$(mktemp)"
-    awk -v n="$line_num" -v orig="$original_line" \
-        'NR == n { print orig; next } { print }' \
-        "$PLANQ_FILE" > "$tmp"
-    mv "$tmp" "$PLANQ_FILE"
-}
+_mark_done()             { _mark_with_status "$1" "$2" "done"; }
+_mark_underway()         { _mark_with_status "$1" "$2" "underway"; }
+_mark_inactive()         { _mark_with_status "$1" "$2" ""; }
+_mark_auto_queue()       { _mark_with_status "$1" "$2" "auto-queue"; }
+_mark_awaiting_commit()  { _mark_with_status "$1" "$2" "awaiting-commit"; }
+_mark_awaiting_plan()    { _mark_with_status "$1" "$2" "awaiting-plan"; }
+_mark_deferred()         { _mark_with_status "$1" "$2" "deferred"; }
 
 # Set or clear the commit flag (+auto-commit / +stage-commit / +manual-commit) on a task line.
 # flag: "auto-commit" | "stage-commit" | "manual-commit" | "none" (clears)
@@ -385,45 +430,6 @@ _set_commit_flag() {
     mv "$tmp" "$PLANQ_FILE"
 }
 
-_mark_auto_queue() {
-    local line_num="$1" original_line="$2"
-    local tmp
-    tmp="$(mktemp)"
-    awk -v n="$line_num" -v orig="$original_line" \
-        'NR == n { print "# auto-queue: " orig; next } { print }' \
-        "$PLANQ_FILE" > "$tmp"
-    mv "$tmp" "$PLANQ_FILE"
-}
-
-_mark_awaiting_commit() {
-    local line_num="$1" original_line="$2"
-    local tmp
-    tmp="$(mktemp)"
-    awk -v n="$line_num" -v orig="$original_line" \
-        'NR == n { print "# awaiting-commit: " orig; next } { print }' \
-        "$PLANQ_FILE" > "$tmp"
-    mv "$tmp" "$PLANQ_FILE"
-}
-
-_mark_awaiting_plan() {
-    local line_num="$1" original_line="$2"
-    local tmp
-    tmp="$(mktemp)"
-    awk -v n="$line_num" -v orig="$original_line" \
-        'NR == n { print "# awaiting-plan: " orig; next } { print }' \
-        "$PLANQ_FILE" > "$tmp"
-    mv "$tmp" "$PLANQ_FILE"
-}
-
-_mark_deferred() {
-    local line_num="$1" original_line="$2"
-    local tmp
-    tmp="$(mktemp)"
-    awk -v n="$line_num" -v orig="$original_line" \
-        'NR == n { print "# deferred: " orig; next } { print }' \
-        "$PLANQ_FILE" > "$tmp"
-    mv "$tmp" "$PLANQ_FILE"
-}
 
 _insert_after_line() {
     local line_num="$1" new_line="$2"
@@ -435,47 +441,25 @@ _insert_after_line() {
     mv "$tmp" "$PLANQ_FILE"
 }
 
-# Outputs: line_number TAB task_line  (first auto-queue task only)
-_find_next_auto_task() {
+# Outputs: line_number TAB line  (first task with given status)
+_find_next_with_status() {
+    local want_status="$1"
     [ ! -f "$PLANQ_FILE" ] && return
     local n=0
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# auto-queue: "* ]] || continue
-        printf '%d\t%s\n' "$n" "${trimmed#"# auto-queue: "}"
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        local after_dash="${line#*"- "}" _v2_status
+        _v2_extract_status "$after_dash"
+        [ "$_v2_status" = "$want_status" ] || continue
+        printf '%d\t%s\n' "$n" "$line"
         return
     done < "$PLANQ_FILE"
 }
-
-# Outputs: line_number TAB task_line  (first awaiting-commit task only)
-_find_next_awaiting_commit_task() {
-    [ ! -f "$PLANQ_FILE" ] && return
-    local n=0
-    while IFS= read -r line; do
-        n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# awaiting-commit: "* ]] || continue
-        printf '%d\t%s\n' "$n" "${trimmed#"# awaiting-commit: "}"
-        return
-    done < "$PLANQ_FILE"
-}
-
-# Outputs: line_number TAB task_line  (first awaiting-plan task only)
-_find_next_awaiting_plan_task() {
-    [ ! -f "$PLANQ_FILE" ] && return
-    local n=0
-    while IFS= read -r line; do
-        n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "# awaiting-plan: "* ]] || continue
-        printf '%d\t%s\n' "$n" "${trimmed#"# awaiting-plan: "}"
-        return
-    done < "$PLANQ_FILE"
-}
+_find_next_auto_task()           { _find_next_with_status "auto-queue"; }
+_find_next_awaiting_commit_task() { _find_next_with_status "awaiting-commit"; }
+_find_next_awaiting_plan_task()  { _find_next_with_status "awaiting-plan"; }
 
 # Wait until the target plan file appears in the queue (for awaiting-plan tasks).
 _wait_for_plan() {
@@ -490,7 +474,7 @@ _wait_for_plan() {
         local current_line
         current_line="$(sed -n "${line_num}p" "$PLANQ_FILE" 2>/dev/null || true)"
         current_line="${current_line#"${current_line%%[![:space:]]*}"}"
-        if [[ "$current_line" != "# awaiting-plan: "* ]]; then
+        if [[ "$current_line" != *"[awaiting-plan]"* ]]; then
             echo "awaiting-plan: task no longer in awaiting-plan state."
             return
         fi
@@ -590,15 +574,12 @@ _delete_line() {
 }
 
 _parse_task() {
-    # Args: task_line → sets task_type, task_value, task_auto_commit, task_stage_commit, task_manual_commit,
-    #       task_add_after, task_add_end, task_auto_queue_plan in caller scope
+    # Args: task_line (full V2 line) → sets task_type, task_value, task_auto_commit, etc.
     local line="$1"
-    # Strip depth prefix "- " (possibly preceded by spaces) before parsing
-    local _leading_sp="${line%%[! ]*}"
-    local _after_sp="${line#"$_leading_sp"}"
-    if [[ "$_after_sp" == "- "* ]]; then
-        line="${_after_sp#"- "}"
-    fi
+    # V2: strip indent + "- " + optional "[status] " to get "type: value +flags"
+    local _v2_task_part
+    _v2_strip_line "$line"
+    line="$_v2_task_part"
     task_type="${line%%:*}"
     task_value="${line#*: }"
     task_auto_commit=""
@@ -641,48 +622,38 @@ _list_archive() {
     fi
     local i=0
     while IFS= read -r line; do
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        if [[ "$trimmed" == "# done:"* ]]; then
-            i=$((i + 1))
-            printf "  \033[2m✅ %-3d  %s\033[0m\n" "$i" "${trimmed#"# done: "}"
-        elif [[ "$trimmed" == "# underway:"* ]]; then
-            i=$((i + 1))
-            printf "  \033[33m⏳ %-3d  %s\033[0m\n" "$i" "${trimmed#"# underway: "}"
-        elif [[ "$trimmed" == "#"* ]]; then
-            continue  # regular comment — skip
-        else
-            i=$((i + 1))
-            printf "  ▶  %-3d  %s\n" "$i" "$trimmed"
-        fi
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        i=$((i + 1))
+        local after_dash="${line#*"- "}" _v2_status _v2_task_part
+        _v2_extract_status "$after_dash"
+        _v2_strip_line "$line"
+        case "$_v2_status" in
+            done)     printf "  \033[2m✅ %-3d  %s\033[0m\n" "$i" "$_v2_task_part" ;;
+            underway) printf "  \033[33m⏳ %-3d  %s\033[0m\n" "$i" "$_v2_task_part" ;;
+            *)        printf "  ▶  %-3d  %s\n" "$i" "$_v2_task_part" ;;
+        esac
     done < "$HISTORY_FILE"
 }
 
-# Outputs: line_number TAB task_line (stripped)  for the Nth entry in the archive (1-based)
+# Outputs: line_number TAB line  for the Nth entry in the archive (1-based)
 _find_archive_by_number() {
     local target="$1"
     [ ! -f "$HISTORY_FILE" ] && return
     local n=0 i=0
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* ]] && continue
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
         i=$((i + 1))
         if [ "$i" -eq "$target" ]; then
-            local task_line="$trimmed"
-            if [[ "$task_line" == "# done: "* ]]; then
-                task_line="${task_line#"# done: "}"
-            elif [[ "$task_line" == "# underway: "* ]]; then
-                task_line="${task_line#"# underway: "}"
-            fi
-            printf '%d\t%s\n' "$n" "$task_line"
+            printf '%d\t%s\n' "$n" "$line"
             return
         fi
     done < "$HISTORY_FILE"
 }
 
-# Outputs: line_number TAB task_line (stripped)  for an archive entry by number or text
+# Outputs: line_number TAB line  for an archive entry by number or text
 _find_archive_by_identifier() {
     local ident="$1"
     if [[ "$ident" =~ ^[0-9]+$ ]]; then
@@ -693,18 +664,13 @@ _find_archive_by_identifier() {
     local n=0
     while IFS= read -r line; do
         n=$((n + 1))
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == "#"* && "$trimmed" != "# done:"* && "$trimmed" != "# underway:"* ]] && continue
-        local task_line="$trimmed"
-        if [[ "$task_line" == "# done: "* ]]; then
-            task_line="${task_line#"# done: "}"
-        elif [[ "$task_line" == "# underway: "* ]]; then
-            task_line="${task_line#"# underway: "}"
-        fi
-        local task_value="${task_line#*: }"
-        if [ "$task_value" = "$ident" ] || [ "$task_line" = "$ident" ]; then
-            printf '%d\t%s\n' "$n" "$task_line"
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        local _v2_task_part
+        _v2_strip_line "$line"
+        local task_value="${_v2_task_part#*: }"
+        if [ "$task_value" = "$ident" ] || [ "$_v2_task_part" = "$ident" ]; then
+            printf '%d\t%s\n' "$n" "$line"
             return
         fi
     done < "$HISTORY_FILE"
@@ -719,36 +685,17 @@ _get_subtasks() {
     [ ! -f "$PLANQ_FILE" ] && return
     local parent_raw depth
     parent_raw="$(awk -v n="$parent_line_num" 'NR == n { print; exit }' "$PLANQ_FILE")"
-    local parent_trimmed="${parent_raw#"${parent_raw%%[![:space:]]*}"}"
-    local parent_content
-    if   [[ "$parent_trimmed" == "# done: "* ]];          then parent_content="${parent_trimmed#"# done: "}"
-    elif [[ "$parent_trimmed" == "# underway: "* ]];      then parent_content="${parent_trimmed#"# underway: "}"
-    elif [[ "$parent_trimmed" == "# auto-queue: "* ]];    then parent_content="${parent_trimmed#"# auto-queue: "}"
-    elif [[ "$parent_trimmed" == "# awaiting-commit: "* ]]; then parent_content="${parent_trimmed#"# awaiting-commit: "}"
-    elif [[ "$parent_trimmed" == "# deferred: "* ]];      then parent_content="${parent_trimmed#"# deferred: "}"
-    else parent_content="$parent_trimmed"
-    fi
-    _content_depth_step "$parent_content"
+    _content_depth_step "$parent_raw"
     local parent_depth=$depth
     local n=0
     while IFS= read -r line; do
         n=$((n + 1))
         [ "$n" -le "$parent_line_num" ] && continue
         [ -z "$line" ] && continue
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        [ -z "$trimmed" ] && continue
-        local content
-        if   [[ "$trimmed" == "# done: "* ]];          then content="${trimmed#"# done: "}"
-        elif [[ "$trimmed" == "# underway: "* ]];      then content="${trimmed#"# underway: "}"
-        elif [[ "$trimmed" == "# auto-queue: "* ]];    then content="${trimmed#"# auto-queue: "}"
-        elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
-        elif [[ "$trimmed" == "# deferred: "* ]];      then content="${trimmed#"# deferred: "}"
-        elif [[ "$trimmed" == "#"* ]];                  then continue
-        else content="$line"
-        fi
-        _content_depth_step "$content"
+        [[ "$line" == "#"* ]] && continue
+        _content_depth_step "$line"
         [ "$depth" -le "$parent_depth" ] && break
-        printf '%d\t%s\n' "$n" "$content"
+        printf '%d\t%s\n' "$n" "$line"
     done < "$PLANQ_FILE"
 }
 
@@ -775,10 +722,9 @@ _archive_one_task() {
             fi
         fi
 
-        # Read original line (preserving status prefix) before deleting
+        # Read original V2 line (preserving indent and [status]) before deleting
         local original_line
         original_line="$(awk -v n="$line_num" 'NR == n { print; exit }' "$PLANQ_FILE")"
-        original_line="${original_line#"${original_line%%[![:space:]]*}"}"
         printf '%s\n' "$original_line" >> "$HISTORY_FILE"
     fi
 
@@ -987,8 +933,8 @@ cmd_run() {
             if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
                 _mark_done "$line_num" "$task_line"
                 # After marking done the line number is now a done line; insert/append the plan
-                local new_plan_task="plan: ${target_plan}"
-                [ -n "$task_auto_queue_plan" ] && new_plan_task="# auto-queue: plan: ${target_plan}"
+                local new_plan_task="- plan: ${target_plan}"
+                [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
                 if [ -n "$task_add_after" ]; then
                     _insert_after_line "$line_num" "$new_plan_task"
                     echo "make-plan: Added 'plan: ${target_plan}' after current position."
@@ -1292,7 +1238,7 @@ _wait_for_stage_commit() {
         local current_line
         current_line="$(awk -v n="$line_num" 'NR == n { print; exit }' "$PLANQ_FILE" 2>/dev/null || true)"
         current_line="${current_line#"${current_line%%[![:space:]]*}"}"
-        if [[ "$current_line" != "# awaiting-commit: "* ]]; then
+        if [[ "$current_line" != *"[awaiting-commit]"* ]]; then
             echo "awaiting-commit: task no longer in awaiting-commit state."
             return
         fi
@@ -1503,50 +1449,27 @@ cmd_create() {
         parent_line_num="${parent_info%%	*}"
         parent_task_line="${parent_info#*	}"
 
-        # Detect parent depth: strip status prefix first, then use _content_depth_step.
-        # Status prefixes ("# done: " etc.) must be removed before depth calculation
-        # or the "- " depth marker won't be visible.
-        local parent_raw_line parent_depth=0
+        # V2: depth is just indent/2 from the raw line
+        local parent_raw_line parent_depth=0 depth
         parent_raw_line=$(sed -n "${parent_line_num}p" "$PLANQ_FILE")
-        local parent_trimmed="${parent_raw_line#"${parent_raw_line%%[![:space:]]*}"}"
-        local parent_content
-        if   [[ "$parent_trimmed" == "# done: "* ]];           then parent_content="${parent_trimmed#"# done: "}"
-        elif [[ "$parent_trimmed" == "# underway: "* ]];        then parent_content="${parent_trimmed#"# underway: "}"
-        elif [[ "$parent_trimmed" == "# auto-queue: "* ]];      then parent_content="${parent_trimmed#"# auto-queue: "}"
-        elif [[ "$parent_trimmed" == "# awaiting-commit: "* ]]; then parent_content="${parent_trimmed#"# awaiting-commit: "}"
-        elif [[ "$parent_trimmed" == "# deferred: "* ]];        then parent_content="${parent_trimmed#"# deferred: "}"
-        else parent_content="$parent_trimmed"
-        fi
-        _content_depth_step "$parent_content"
+        _content_depth_step "$parent_raw_line"
         parent_depth=$depth
 
-        # Build depth prefix for child: (parent_depth)*"  " + "- "
+        # Build V2 child line: (child_depth * 2 spaces) + "- " + task_line
         local child_depth=$(( parent_depth + 1 ))
-        local depth_prefix
-        depth_prefix=$(printf '%*s' $(( (child_depth - 1) * 2 )) '')
-        depth_prefix="${depth_prefix}- "
-
-        local indented_task_line="${depth_prefix}${task_line}"
+        local child_indent
+        child_indent="$(printf '%*s' $(( child_depth * 2 )) '')"
+        local indented_task_line="${child_indent}- ${task_line}"
 
         # Find insertion point: after last line in parent's subtree (depth > parent_depth).
-        # Strip status prefix from each line before depth checking — same as _get_subtasks.
         local insert_after="$parent_line_num"
         local n=0
         while IFS= read -r line; do
             n=$(( n + 1 ))
             [ "$n" -le "$parent_line_num" ] && continue
             [ -z "$line" ] && continue
-            local trimmed="${line#"${line%%[![:space:]]*}"}"
-            local content
-            if   [[ "$trimmed" == "# done: "* ]];           then content="${trimmed#"# done: "}"
-            elif [[ "$trimmed" == "# underway: "* ]];        then content="${trimmed#"# underway: "}"
-            elif [[ "$trimmed" == "# auto-queue: "* ]];      then content="${trimmed#"# auto-queue: "}"
-            elif [[ "$trimmed" == "# awaiting-commit: "* ]]; then content="${trimmed#"# awaiting-commit: "}"
-            elif [[ "$trimmed" == "# deferred: "* ]];        then content="${trimmed#"# deferred: "}"
-            elif [[ "$trimmed" == "#"* ]];                   then continue
-            else content="$line"
-            fi
-            _content_depth_step "$content"
+            [[ "$line" == "#"* ]] && continue
+            _content_depth_step "$line"
             [ "$depth" -le "$parent_depth" ] && break
             insert_after="$n"
         done < "$PLANQ_FILE"
@@ -1562,7 +1485,8 @@ cmd_create() {
         _created_num="$(_get_dotted_number_for_line $((insert_after + 1)))"
         echo "Created subtask #${_created_num} (depth ${child_depth} under ${parent_task_line%% +*}): $task_line"
     else
-        printf '%s\n' "$task_line" >> "$PLANQ_FILE"
+        # V2: top-level task = "- type: value +flags"
+        printf '%s\n' "- ${task_line}" >> "$PLANQ_FILE"
         local _created_line_count _created_num
         _created_line_count="$(wc -l < "$PLANQ_FILE")"
         _created_num="$(_get_dotted_number_for_line "$_created_line_count")"
@@ -1732,10 +1656,10 @@ cmd_mark() {
                 _write_test_result "$task_line" "$mark_result" "$mark_notes"
             fi
             # For make-plan with +add-after or +add-end, insert the plan task
-            if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; } && [[ "$raw_line" != "# done:"* ]]; then
+            if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; } && [[ "$raw_line" != *"[done]"* ]]; then
                 local target_plan="${task_value/#make-plan-/plan-}"
-                local new_plan_task="plan: ${target_plan}"
-                [ -n "$task_auto_queue_plan" ] && new_plan_task="# auto-queue: plan: ${target_plan}"
+                local new_plan_task="- plan: ${target_plan}"
+                [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
                 if [ -n "$task_add_after" ]; then
                     _insert_after_line "$line_num" "$new_plan_task"
                     echo "make-plan: Added 'plan: ${target_plan}' after current position."
@@ -1803,8 +1727,8 @@ _run_task_inline() {
             _invoke_claude "${prompt} Write the plan to plans/${target_plan}. REQUIRED FINAL STEP: Write a brief summary of the plan you created to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
             if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
                 _mark_done "$line_num" "$task_line"
-                local new_plan_task="plan: ${target_plan}"
-                [ -n "$task_auto_queue_plan" ] && new_plan_task="# auto-queue: plan: ${target_plan}"
+                local new_plan_task="- plan: ${target_plan}"
+                [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
                 if [ -n "$task_add_after" ]; then
                     _insert_after_line "$line_num" "$new_plan_task"
                     echo "make-plan: Added 'plan: ${target_plan}' after current position."
@@ -1857,10 +1781,10 @@ _run_task_inline() {
                 local ml_line
                 ml_line="$(awk -v n="$line_num" 'NR == n { print; exit }' "$PLANQ_FILE" 2>/dev/null || true)"
                 ml_line="${ml_line#"${ml_line%%[![:space:]]*}"}"
-                [[ "$ml_line" == "# underway: "* ]] || break
+                [[ "$ml_line" == *"[underway]"* ]] || break
             done
             # If already marked done/inactive via dashboard, skip _mark_done below
-            if [[ "$ml_line" != "# underway: "* ]]; then
+            if [[ "$ml_line" != *"[underway]"* ]]; then
                 _auto_set_review_ready
                 _notify_daemon
                 return 0
@@ -2083,13 +2007,14 @@ cmd_archive() {
             n=$((n + 1))
             local trimmed="${line#"${line%%[![:space:]]*}"}"
             [ -z "$trimmed" ] && continue
-            if [[ "$trimmed" == "# done:"* ]]; then
-                local task_line="${trimmed#"# done: "}"
-                local depth
-                _content_depth_step "$task_line"
+            [[ "$line" == "#"* ]] && continue
+            local after_dash="${line#*"- "}" _v2_status depth
+            _v2_extract_status "$after_dash"
+            if [ "$_v2_status" = "done" ]; then
+                _content_depth_step "$line"
                 # Only collect top-level done tasks; subtasks are added by _get_subtasks
                 if [ "$depth" -eq 0 ]; then
-                    printf '%d\t%s\n' "$n" "$task_line" >> "$tmp_tasks"
+                    printf '%d\t%s\n' "$n" "$line" >> "$tmp_tasks"
                     _get_subtasks "$n" >> "$tmp_tasks"
                 fi
             fi

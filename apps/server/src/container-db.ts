@@ -482,71 +482,19 @@ function rowToContainer(row: any): ContainerRow {
 
 export function parsePlanqOrder(text: string): PlanqItem[] {
   const items: PlanqItem[] = [];
+  // V2 line format: "(  )*- [status] type: value +flags"
+  const v2LineRe = /^( *)- (?:\[([a-z-]+)\] )?(.*)$/;
   for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!line.trim()) continue;
+    if (line.trim().startsWith('#')) continue; // pure comment
 
-    let status: PlanqItem['status'] = 'pending';
-    let activeLine = trimmed;
-    if (trimmed.startsWith('# done:')) {
-      status = 'done';
-      activeLine = trimmed.slice('# done:'.length).trim();
-    } else if (trimmed.startsWith('# underway:')) {
-      status = 'underway';
-      activeLine = trimmed.slice('# underway:'.length).trim();
-    } else if (trimmed.startsWith('# auto-queue:')) {
-      status = 'auto-queue';
-      activeLine = trimmed.slice('# auto-queue:'.length).trim();
-    } else if (trimmed.startsWith('# awaiting-commit:')) {
-      status = 'awaiting-commit';
-      activeLine = trimmed.slice('# awaiting-commit:'.length).trim();
-    } else if (trimmed.startsWith('# awaiting-plan:')) {
-      status = 'awaiting-plan';
-      activeLine = trimmed.slice('# awaiting-plan:'.length).trim();
-    } else if (trimmed.startsWith('# deferred:')) {
-      status = 'deferred';
-      activeLine = trimmed.slice('# deferred:'.length).trim();
-    } else if (trimmed.startsWith('#')) {
-      continue; // regular comment
-    }
+    const m = line.match(v2LineRe);
+    if (!m) continue;
 
-    // Detect depth prefix: optional leading "  " pairs followed by "- "
-    // Two serialization formats exist in the wild:
-    //   New (status-first): "# done: - task: foo.md"      — status then depth in activeLine
-    //   Old (depth-first):  "- # done: task: foo.md"      — depth prefix before status (from
-    //                       planq.sh archive and old serializePlanqOrder)
-    // Both are handled: for the old format the first-pass status check above misses it (starts
-    // with "- "), so we re-check for status inside the depth-matched content.
-    let depth = 0;
-    const depthMatch = activeLine.match(/^((?:  )*)- (.*)/);
-    if (depthMatch) {
-      depth = depthMatch[1]!.length / 2 + 1;
-      activeLine = depthMatch[2]!;
-      // Re-check status prefix inside depth content (handles depth-first format)
-      if (status === 'pending') {
-        if (activeLine.startsWith('# done:')) {
-          status = 'done';
-          activeLine = activeLine.slice('# done:'.length).trim();
-        } else if (activeLine.startsWith('# underway:')) {
-          status = 'underway';
-          activeLine = activeLine.slice('# underway:'.length).trim();
-        } else if (activeLine.startsWith('# auto-queue:')) {
-          status = 'auto-queue';
-          activeLine = activeLine.slice('# auto-queue:'.length).trim();
-        } else if (activeLine.startsWith('# awaiting-commit:')) {
-          status = 'awaiting-commit';
-          activeLine = activeLine.slice('# awaiting-commit:'.length).trim();
-        } else if (activeLine.startsWith('# awaiting-plan:')) {
-          status = 'awaiting-plan';
-          activeLine = activeLine.slice('# awaiting-plan:'.length).trim();
-        } else if (activeLine.startsWith('# deferred:')) {
-          status = 'deferred';
-          activeLine = activeLine.slice('# deferred:'.length).trim();
-        } else if (activeLine.startsWith('#')) {
-          continue; // comment inside depth block
-        }
-      }
-    }
+    const indent = m[1]!;
+    const depth = indent.length / 2;
+    let status: PlanqItem['status'] = (m[2] as PlanqItem['status']) || 'pending';
+    let activeLine = m[3]!;
 
     const colonIdx = activeLine.indexOf(':');
     if (colonIdx < 0) continue;
@@ -632,17 +580,11 @@ export function serializePlanqOrder(tasks: PlanqTaskRow[]): string {
       if (t.auto_queue_plan) value += ' +auto-queue-plan';
     }
     if (t.review_status && t.review_status !== 'none') value += ` +${t.review_status}`;
-    if (t.status === 'done') value = `# done: ${value}`;
-    else if (t.status === 'underway') value = `# underway: ${value}`;
-    else if (t.status === 'auto-queue') value = `# auto-queue: ${value}`;
-    else if (t.status === 'awaiting-commit') value = `# awaiting-commit: ${value}`;
-    else if (t.status === 'awaiting-plan') value = `# awaiting-plan: ${value}`;
-    else if (t.status === 'deferred') value = `# deferred: ${value}`;
+    // V2 format: "(  )*- [status] type: value +flags"
     const depth = getDepth(t);
-    if (depth > 0) {
-      value = '  '.repeat(depth - 1) + '- ' + value;
-    }
-    lines.push(value);
+    const indent = '  '.repeat(depth);
+    const statusBracket = (t.status && t.status !== 'pending') ? `[${t.status}] ` : '';
+    lines.push(`${indent}- ${statusBracket}${value}`);
   }
   return lines.join('\n') + '\n';
 }
@@ -893,7 +835,7 @@ export function getArchiveTasks(containerId: string): PlanqItem[] {
   return parsePlanqOrder(row.planq_history);
 }
 
-/** Serialize a PlanqItem back to a single history-file line (status-first, then depth prefix). */
+/** Serialize a PlanqItem back to a single V2 line. */
 function serializeArchiveItemLine(item: PlanqItem): string {
   let value = item.filename
     ? `${item.task_type}: ${item.filename}`
@@ -902,13 +844,11 @@ function serializeArchiveItemLine(item: PlanqItem): string {
   else if (item.commit_mode === 'stage') value += ' +stage-commit';
   else if (item.commit_mode === 'manual') value += ' +manual-commit';
   if (item.review_status && item.review_status !== 'none') value += ` +${item.review_status}`;
+  // V2 format
   const depth = item.depth ?? 0;
-  const depthPrefix = depth > 0 ? '  '.repeat(depth - 1) + '- ' : '';
-  let statusPrefix = '';
-  if (item.status === 'done') statusPrefix = '# done: ';
-  else if (item.status === 'underway') statusPrefix = '# underway: ';
-  else if (item.status === 'deferred') statusPrefix = '# deferred: ';
-  return statusPrefix + depthPrefix + value;
+  const indent = '  '.repeat(depth);
+  const statusBracket = (item.status && item.status !== 'pending') ? `[${item.status}] ` : '';
+  return `${indent}- ${statusBracket}${value}`;
 }
 
 /**
