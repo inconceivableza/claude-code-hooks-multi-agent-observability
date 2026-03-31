@@ -147,61 +147,37 @@
         </template>
       </div>
 
-      <!-- Task list -->
-      <div v-if="filteredTasksWithMeta.length > 0">
-        <template v-for="({ task, dimmed }, taskIdx) in filteredTasksWithMeta" :key="task.id">
+      <!-- Task list: flat DFS-ordered list supporting unlimited nesting levels -->
+      <div v-if="visibleTasksFlat.length > 0">
+        <template v-for="item in visibleTasksFlat" :key="item.task.id">
           <PlanqTaskRow
-            :task="task"
-            :position="taskIdx + 1"
+            :task="item.task"
+            :position="item.position"
             :container-id="containerId"
             :all-tasks="tasks"
-            :dimmed="dimmed"
+            :dimmed="item.dimmed"
+            :nest-level="item.depth"
+            :link-type="item.depth > 0 ? item.task.link_type : undefined"
             :plans-files-list="props.plansFilesList"
-            @edit-file="editingFile = task"
+            @edit-file="editingFile = item.task"
             @set-status="(t, s) => setStatus(t, s)"
-            @delete="deleteTask(task.id)"
+            @delete="deleteTask(item.task.id)"
             @update-desc="(id, desc) => updateDesc(id, desc)"
             @set-commit-mode="(t, m) => setCommitMode(t, m)"
             @add-plan="addPlanFromMakePlan"
-            @archive="archiveTask(task.id)"
+            @archive="archiveTask(item.task.id)"
             @set-review-status="(t, s) => setReviewStatus(t, s)"
-            @add-subtask="addingSubtaskTo = task"
-            @dragstart="onTaskDragStart(task.id)"
+            @add-subtask="addingSubtaskTo = item.task"
+            @dragstart="onTaskDragStart(item.task.id)"
             @dragend="onTaskDragEnd"
-            @drop="dropOn(task.id)"
+            @drop="dropOn(item.task.id)"
             @open-session="sid => emit('open-history', sid)"
             @copy-to-container="t => openMoveDialog(t, 'copy')"
             @move-to-container="t => openMoveDialog(t, 'move')"
           />
-          <!-- Subtasks (children of this task), filtered when filters active -->
-          <template v-for="(child, childIdx) in filteredChildren(task.id)" :key="child.id">
-            <PlanqTaskRow
-              :task="child"
-              :position="`${taskIdx + 1}.${childIdx + 1}`"
-              :container-id="containerId"
-              :all-tasks="tasks"
-              :is-child="true"
-              :link-type="child.link_type"
-              :plans-files-list="props.plansFilesList"
-              @edit-file="editingFile = child"
-              @set-status="(t, s) => setStatus(t, s)"
-              @delete="deleteTask(child.id)"
-              @update-desc="(id, desc) => updateDesc(id, desc)"
-              @set-commit-mode="(t, m) => setCommitMode(t, m)"
-              @add-plan="addPlanFromMakePlan"
-              @archive="archiveTask(child.id)"
-              @set-review-status="(t, s) => setReviewStatus(t, s)"
-              @dragstart="onTaskDragStart(child.id)"
-              @dragend="onTaskDragEnd"
-              @drop="dropOn(child.id)"
-              @open-session="sid => emit('open-history', sid)"
-              @copy-to-container="t => openMoveDialog(t, 'copy')"
-              @move-to-container="t => openMoveDialog(t, 'move')"
-            />
-          </template>
         </template>
       </div>
-      <div v-else-if="tasks.length > 0 && filteredTasksWithMeta.length === 0" class="text-xs text-slate-500 italic py-1">No tasks match filter.</div>
+      <div v-else-if="tasks.length > 0 && hasActiveFilters" class="text-xs text-slate-500 italic py-1">No tasks match filter.</div>
       <div v-else class="text-xs text-slate-500 italic py-1">No tasks queued.</div>
 
       <!-- Add buttons -->
@@ -564,6 +540,51 @@ function filteredChildren(parentId: number): PlanqTask[] {
   if (!hasActiveFilters.value) return children
   return children.filter(c => taskMatchesFilters(c) || anyDescendantMatchesFilters(c.id))
 }
+
+// Pre-compute dotted positions for ALL tasks in the unfiltered tree so filtering
+// never changes task numbers (consistent with planq.sh display).
+const taskPositions = computed(() => {
+  const positions = new Map<number, string>()
+  function dfs(tasks: PlanqTask[], prefix: string) {
+    tasks.forEach((task, idx) => {
+      const pos = `${prefix}${idx + 1}`
+      positions.set(task.id, pos)
+      const children = taskChildren.value.get(task.id) ?? []
+      if (children.length > 0) dfs(children, `${pos}.`)
+    })
+  }
+  dfs(sortedTasks.value, '')
+  return positions
+})
+
+// Flat DFS-ordered list of all visible tasks (all nesting levels) with depth, position, dimmed.
+const visibleTasksFlat = computed((): { task: PlanqTask; depth: number; position: string; dimmed: boolean }[] => {
+  const result: { task: PlanqTask; depth: number; position: string; dimmed: boolean }[] = []
+
+  function visit(task: PlanqTask, depth: number) {
+    const direct = !hasActiveFilters.value || taskMatchesFilters(task)
+    const childMatch = anyDescendantMatchesFilters(task.id)
+    if (!direct && !childMatch) return
+
+    result.push({
+      task,
+      depth,
+      position: taskPositions.value.get(task.id) ?? '?',
+      dimmed: hasActiveFilters.value && !direct,
+    })
+
+    const children = taskChildren.value.get(task.id) ?? []
+    for (const child of children) {
+      visit(child, depth + 1)
+    }
+  }
+
+  for (const task of sortedTasks.value) {
+    visit(task, 0)
+  }
+
+  return result
+})
 
 const REVIEW_STATUS_DEFS: Array<{ status: string; icon: string; label: string; activeClass: string }> = [
   { status: 'ready',          icon: '🔵', label: 'Ready',          activeClass: 'bg-blue-900/60 text-blue-300' },

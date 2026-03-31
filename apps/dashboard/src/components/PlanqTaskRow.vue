@@ -1,5 +1,9 @@
 <template>
-  <div class="flex flex-col" :class="isChild ? 'pl-5 border-l border-slate-700/60 ml-1' : ''">
+  <div
+    class="flex flex-col"
+    :class="effectiveNestLevel > 0 ? 'border-l border-slate-700/60 ml-1' : ''"
+    :style="effectiveNestLevel > 0 ? { paddingLeft: `${effectiveNestLevel * 1.25}rem` } : {}"
+  >
   <div
     class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-700/50 group"
     :class="{ 'opacity-50': task.status === 'done', 'opacity-40 grayscale': task.status === 'deferred' || dimmed, 'bg-yellow-900/20': task.status === 'underway', 'bg-cyan-900/20': task.status === 'auto-queue', 'bg-purple-900/20': task.status === 'awaiting-commit', 'bg-teal-900/20': task.status === 'awaiting-plan' }"
@@ -12,7 +16,7 @@
     @contextmenu.prevent="openContextMenu"
   >
     <!-- Drag handle / link type badge -->
-    <span v-if="!isChild" class="text-slate-600 cursor-grab text-xs select-none">⠿</span>
+    <span v-if="effectiveNestLevel === 0" class="text-slate-600 cursor-grab text-xs select-none">⠿</span>
     <span v-else-if="linkType === 'fix-required'" class="text-red-500 text-xs shrink-0 cursor-grab select-none" title="fix-required (drag to reorder)">🔧</span>
     <span v-else-if="linkType === 'check'" class="text-blue-400 text-xs shrink-0 cursor-grab select-none" title="check (drag to reorder)">✓</span>
     <span v-else-if="linkType === 'other'" class="text-slate-400 text-xs shrink-0" title="other">·</span>
@@ -196,7 +200,7 @@
 
       <!-- Add subtask -->
       <button
-        v-if="!isChild && effectiveFilename"
+        v-if="effectiveNestLevel === 0 && effectiveFilename"
         @click.stop="emit('add-subtask', task)"
         class="text-xs px-1 text-slate-500 hover:text-slate-300"
         title="Add a follow-up or fix-required subtask"
@@ -314,7 +318,7 @@
       >🗄️ Archive</button>
 
       <button
-        v-if="!isChild && effectiveFilename"
+        v-if="effectiveNestLevel === 0 && effectiveFilename"
         @click="ctxAction(() => emit('add-subtask', task))"
         class="ctx-item"
       >⊕ Add subtask</button>
@@ -361,6 +365,7 @@ const props = defineProps<{
   containerId: string
   allTasks?: PlanqTask[]
   isChild?: boolean
+  nestLevel?: number
   linkType?: 'follow-up' | 'fix-required' | 'check' | 'other' | null
   dimmed?: boolean
   plansFilesList?: string[]
@@ -383,6 +388,9 @@ const emit = defineEmits<{
   'copy-to-container': [task: PlanqTask]
   'move-to-container': [task: PlanqTask]
 }>()
+
+// Effective nesting depth: nestLevel prop takes priority; fall back to isChild boolean
+const effectiveNestLevel = computed(() => props.nestLevel ?? (props.isChild ? 1 : 0))
 
 const { readFile } = usePlanq()
 const { isOpen, toggle, getCached, setCached, isFeedbackOpen, toggleFeedback, getFeedbackCached, setFeedbackCached } = useExpandedTasks()
