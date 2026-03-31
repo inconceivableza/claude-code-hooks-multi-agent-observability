@@ -521,25 +521,6 @@ function anyDescendantMatchesFilters(taskId: number): boolean {
   return children.some(c => taskMatchesFilters(c) || anyDescendantMatchesFilters(c.id))
 }
 
-// Returns top-level tasks that should be visible, with a flag indicating whether
-// the task is shown only because a descendant matches (in which case it is dimmed).
-const filteredTasksWithMeta = computed((): { task: PlanqTask; dimmed: boolean }[] => {
-  if (!hasActiveFilters.value) return sortedTasks.value.map(t => ({ task: t, dimmed: false }))
-  const result: { task: PlanqTask; dimmed: boolean }[] = []
-  for (const t of sortedTasks.value) {
-    const direct = taskMatchesFilters(t)
-    const childMatch = anyDescendantMatchesFilters(t.id)
-    if (direct || childMatch) result.push({ task: t, dimmed: !direct && childMatch })
-  }
-  return result
-})
-
-// When filters are active, only show subtasks that match or have matching descendants.
-function filteredChildren(parentId: number): PlanqTask[] {
-  const children = taskChildren.value.get(parentId) ?? []
-  if (!hasActiveFilters.value) return children
-  return children.filter(c => taskMatchesFilters(c) || anyDescendantMatchesFilters(c.id))
-}
 
 // Pre-compute dotted positions for ALL tasks in the unfiltered tree so filtering
 // never changes task numbers (consistent with planq.sh display).
