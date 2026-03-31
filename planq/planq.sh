@@ -185,50 +185,222 @@ _v2_indent() {
     printf '%s' "$_spaces"
 }
 
+# ── Filter helpers ────────────────────────────────────────────────────────────
+
+# Resolve a filter token → sets _flt_exclude (0/1), _flt_kind (status/type/unknown), _flt_value.
+_filter_resolve() {
+    local _tok="$1"
+    _flt_exclude=0
+    case "$_tok" in
+        no-*) _flt_exclude=1; _tok="${_tok#no-}" ;;
+        -*)   _flt_exclude=1; _tok="${_tok#-}" ;;
+    esac
+    case "$_tok" in
+        done|d)                  _flt_kind="status"; _flt_value="done" ;;
+        underway|u)              _flt_kind="status"; _flt_value="underway" ;;
+        inactive|i|pending)      _flt_kind="status"; _flt_value="" ;;
+        auto-queue|queue|q)      _flt_kind="status"; _flt_value="auto-queue" ;;
+        awaiting-commit|ac)      _flt_kind="status"; _flt_value="awaiting-commit" ;;
+        awaiting-plan|ap)        _flt_kind="status"; _flt_value="awaiting-plan" ;;
+        deferred|df)             _flt_kind="status"; _flt_value="deferred" ;;
+        task|t)                  _flt_kind="type";   _flt_value="task" ;;
+        plan|pl)                 _flt_kind="type";   _flt_value="plan" ;;
+        make-plan|mp)            _flt_kind="type";   _flt_value="make-plan" ;;
+        investigate|inv)         _flt_kind="type";   _flt_value="investigate" ;;
+        unnamed-task|ut|unnamed) _flt_kind="type";   _flt_value="unnamed-task" ;;
+        manual-test|mt)          _flt_kind="type";   _flt_value="manual-test" ;;
+        manual-commit)           _flt_kind="type";   _flt_value="manual-commit" ;;
+        manual-task)             _flt_kind="type";   _flt_value="manual-task" ;;
+        agent-test|at)           _flt_kind="type";   _flt_value="agent-test" ;;
+        auto-test)               _flt_kind="type";   _flt_value="auto-test" ;;
+        auto-commit)             _flt_kind="type";   _flt_value="auto-commit" ;;
+        *)                       _flt_kind="unknown"; _flt_value="$_tok" ;;
+    esac
+}
+
+# Check if a task (status=$1, type=$2) passes all filter tokens ($3…).
+# Returns 0 (passes) or 1 (filtered out). AND logic: all tokens must pass.
+_filter_check_task() {
+    local _st="$1" _tp="$2"
+    shift 2
+    local _tok _flt_exclude _flt_kind _flt_value _matches
+    for _tok in "$@"; do
+        [ -z "$_tok" ] && continue
+        _filter_resolve "$_tok"
+        _matches=0
+        case "$_flt_kind" in
+            status) [ "$_st" = "$_flt_value" ] && _matches=1 ;;
+            type)   [ "$_tp" = "$_flt_value" ] && _matches=1 ;;
+            *)      _matches=1 ;;
+        esac
+        [ "$_flt_exclude" -eq 0 ] && [ "$_matches" -eq 0 ] && return 1
+        [ "$_flt_exclude" -eq 1 ] && [ "$_matches" -eq 1 ] && return 1
+    done
+    return 0
+}
+
 _list_tasks() {
+    # $@ = optional filter tokens (parsed from -f/--filter/-r by cmd_list)
     if [ ! -f "$PLANQ_FILE" ]; then
         echo "(no planq file at $PLANQ_FILE)"
         return
     fi
+    local _v2_status _v2_task_part depth dotted
+
+    if [ $# -eq 0 ]; then
+        # No filters — simple single-pass display
+        depth_nums=()
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" == "#"* ]] && continue
+            _v2_extract_status "${line#*"- "}"
+            [ "$_v2_status" = "deferred" ] && continue
+            _content_depth_step "$line"; _dotted_num_step "$depth"
+            _v2_strip_line "$line"
+            case "$_v2_status" in
+                done)             printf "  \033[2m✅ %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
+                underway)         printf "  \033[33m⏳ %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
+                auto-queue)       printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
+                awaiting-commit)  printf "  \033[35m💾 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
+                awaiting-plan)    printf "  \033[36m📋 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
+                *)                printf "  ▶  %-5s  %s\n" "$dotted" "$_v2_task_part" ;;
+            esac
+        done < "$PLANQ_FILE"
+        local _deferred_count=0
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" == "#"* ]] && continue
+            _v2_extract_status "${line#*"- "}"
+            [ "$_v2_status" = "deferred" ] || continue
+            [ "$_deferred_count" -eq 0 ] && printf "  \033[2m--- deferred ---\033[0m\n"
+            _content_depth_step "$line"; _dotted_num_step "$depth"
+            _v2_strip_line "$line"
+            _deferred_count=$(( _deferred_count + 1 ))
+            printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part"
+        done < "$PLANQ_FILE"
+        return
+    fi
+
+    # Filtered display:
+    # Phase 1 — collect all non-deferred tasks into parallel arrays
+    local _fl _fs _ft _fd _fdt
+    _fl=(); _fs=(); _ft=(); _fd=(); _fdt=()
     depth_nums=()
-    # Pass 1: all non-deferred tasks
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        [[ "$line" == "#"* ]] && continue  # pure comments
-        # V2: extract status first to skip deferred before numbering
-        local after_dash="${line#*"- "}" _v2_status _v2_task_part
-        _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] && continue
-        local depth dotted
-        _content_depth_step "$line"; _dotted_num_step "$depth"
-        _v2_strip_line "$line"
-        local display="$_v2_task_part"
-        case "$_v2_status" in
-            done)             printf "  \033[2m✅ %-5s  %s\033[0m\n" "$dotted" "$display" ;;
-            underway)         printf "  \033[33m⏳ %-5s  %s\033[0m\n" "$dotted" "$display" ;;
-            auto-queue)       printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$dotted" "$display" ;;
-            awaiting-commit)  printf "  \033[35m💾 %-5s  %s\033[0m\n" "$dotted" "$display" ;;
-            awaiting-plan)    printf "  \033[36m📋 %-5s  %s\033[0m\n" "$dotted" "$display" ;;
-            *)                printf "  ▶  %-5s  %s\n" "$dotted" "$display" ;;
-        esac
-    done < "$PLANQ_FILE"
-    # Pass 2: deferred tasks at the bottom (grayed out)
-    local deferred_count=0
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         [[ "$line" == "#"* ]] && continue
-        local after_dash="${line#*"- "}" _v2_status
-        _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] || continue
-        if [ "$deferred_count" -eq 0 ]; then
-            printf "  \033[2m--- deferred ---\033[0m\n"
-        fi
-        local depth dotted _v2_task_part
-        _content_depth_step "$line"; _dotted_num_step "$depth"
+        _v2_extract_status "${line#*"- "}"
+        [ "$_v2_status" = "deferred" ] && continue
+        _content_depth_step "$line"
         _v2_strip_line "$line"
-        deferred_count=$((deferred_count + 1))
-        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part"
+        _fl+=("$line")
+        _fs+=("$_v2_status")
+        _ft+=("${_v2_task_part%%:*}")
+        _fd+=("$depth")
     done < "$PLANQ_FILE"
+    local _n="${#_fl[@]}"
+
+    # Phase 2 — compute dotted numbers for ALL tasks (consistent with unfiltered view)
+    depth_nums=()
+    local _i
+    for (( _i=0; _i<_n; _i++ )); do
+        _dotted_num_step "${_fd[$_i]}"
+        _fdt+=("$dotted")
+    done
+
+    # Phase 3 — determine which tasks directly match the filter
+    local _fm _fa
+    _fm=(); _fa=()
+    for (( _i=0; _i<_n; _i++ )); do
+        if _filter_check_task "${_fs[$_i]}" "${_ft[$_i]}" "$@"; then
+            _fm+=( 1 ); else _fm+=( 0 ); fi
+        _fa+=( 0 )
+    done
+
+    # Phase 4 — propagate: mark ancestors of matching tasks
+    local _j _need
+    for (( _i=0; _i<_n; _i++ )); do
+        [ "${_fm[$_i]}" -eq 0 ] && continue
+        [ "${_fd[$_i]}" -eq 0 ] && continue
+        _need=$(( _fd[_i] - 1 ))
+        for (( _j=_i-1; _j>=0 && _need>=0; _j-- )); do
+            if [ "${_fd[$_j]}" -eq "$_need" ]; then
+                _fa[$_j]=1
+                _need=$(( _need - 1 ))
+            fi
+        done
+    done
+
+    # Phase 5 — display visible tasks (direct match shown normally; ancestor shown dimmed)
+    for (( _i=0; _i<_n; _i++ )); do
+        [ "${_fm[$_i]}" -eq 0 ] && [ "${_fa[$_i]}" -eq 0 ] && continue
+        _v2_strip_line "${_fl[$_i]}"
+        local _st="${_fs[$_i]}" _dt="${_fdt[$_i]}"
+        if [ "${_fm[$_i]}" -eq 1 ]; then
+            case "$_st" in
+                done)            printf "  \033[2m✅ %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                underway)        printf "  \033[33m⏳ %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                auto-queue)      printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                awaiting-commit) printf "  \033[35m💾 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                awaiting-plan)   printf "  \033[36m📋 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                *)               printf "  ▶  %-5s  %s\n" "$_dt" "$_v2_task_part" ;;
+            esac
+        else
+            # Ancestor of a matching subtask — show dimmed
+            case "$_st" in
+                done)            printf "  \033[2m✅ %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                underway)        printf "  \033[2m⏳ %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                auto-queue)      printf "  \033[2m⏱  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                awaiting-commit) printf "  \033[2m💾 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                awaiting-plan)   printf "  \033[2m📋 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                *)               printf "  \033[2m▶  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+            esac
+        fi
+    done
+
+    # Deferred section — same filter applied independently
+    local _dl _ds _dtp _dd
+    _dl=(); _ds=(); _dtp=(); _dd=()
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        [[ "$line" == "#"* ]] && continue
+        _v2_extract_status "${line#*"- "}"
+        [ "$_v2_status" = "deferred" ] || continue
+        _content_depth_step "$line"
+        _v2_strip_line "$line"
+        _dl+=("$line")
+        _ds+=("$_v2_status")
+        _dtp+=("${_v2_task_part%%:*}")
+        _dd+=("$depth")
+    done < "$PLANQ_FILE"
+    local _dn="${#_dl[@]}"
+    local _dm _da
+    _dm=(); _da=()
+    for (( _i=0; _i<_dn; _i++ )); do
+        if _filter_check_task "${_ds[$_i]}" "${_dtp[$_i]}" "$@"; then
+            _dm+=( 1 ); else _dm+=( 0 ); fi
+        _da+=( 0 )
+    done
+    for (( _i=0; _i<_dn; _i++ )); do
+        [ "${_dm[$_i]}" -eq 0 ] && continue
+        [ "${_dd[$_i]}" -eq 0 ] && continue
+        _need=$(( _dd[_i] - 1 ))
+        for (( _j=_i-1; _j>=0 && _need>=0; _j-- )); do
+            if [ "${_dd[$_j]}" -eq "$_need" ]; then
+                _da[$_j]=1; _need=$(( _need - 1 ))
+            fi
+        done
+    done
+    depth_nums=()
+    local _deferred_count=0
+    for (( _i=0; _i<_dn; _i++ )); do
+        [ "${_dm[$_i]}" -eq 0 ] && [ "${_da[$_i]}" -eq 0 ] && continue
+        [ "$_deferred_count" -eq 0 ] && printf "  \033[2m--- deferred ---\033[0m\n"
+        _dotted_num_step "${_dd[$_i]}"
+        _v2_strip_line "${_dl[$_i]}"
+        _deferred_count=$(( _deferred_count + 1 ))
+        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part"
+    done
 }
 
 # Outputs: line_number TAB task_line  for a task identified by dotted number ("5.1", "3.2.1").
@@ -736,10 +908,19 @@ _archive_one_task() {
 # ── Subcommands ───────────────────────────────────────────────────────────────
 
 cmd_list() {
-    local archive=""
+    local archive="" _next_filter=0
+    local _filters
+    _filters=()
     for arg in "$@"; do
+        if [ "$_next_filter" -eq 1 ]; then
+            _filters+=("$arg"); _next_filter=0; continue
+        fi
         case "$arg" in
-            --archive|-a) archive=1 ;;
+            --archive|-a)   archive=1 ;;
+            --remaining|-r) _filters+=("-done") ;;
+            --filter|-f)    _next_filter=1 ;;
+            -f:*)           _filters+=("${arg#-f:}") ;;
+            --filter:*)     _filters+=("${arg#--filter:}") ;;
         esac
     done
 
@@ -748,7 +929,11 @@ cmd_list() {
         _list_archive
     else
         echo "Planq: $PLANQ_FILE"
-        _list_tasks
+        if [ "${#_filters[@]}" -gt 0 ]; then
+            _list_tasks "${_filters[@]}"
+        else
+            _list_tasks
+        fi
     fi
 }
 
