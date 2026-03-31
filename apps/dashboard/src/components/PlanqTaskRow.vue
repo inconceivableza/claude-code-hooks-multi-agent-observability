@@ -200,7 +200,7 @@
 
       <!-- Add subtask -->
       <button
-        v-if="effectiveNestLevel === 0 && effectiveFilename"
+        v-if="effectiveFilename"
         @click.stop="emit('add-subtask', task)"
         class="text-xs px-1 text-slate-500 hover:text-slate-300"
         title="Add a follow-up or fix-required subtask"
@@ -318,7 +318,7 @@
       >🗄️ Archive</button>
 
       <button
-        v-if="effectiveNestLevel === 0 && effectiveFilename"
+        v-if="effectiveFilename"
         @click="ctxAction(() => emit('add-subtask', task))"
         class="ctx-item"
       >⊕ Add subtask</button>
