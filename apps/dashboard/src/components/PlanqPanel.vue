@@ -1,5 +1,17 @@
 <template>
-  <div class="mt-2">
+  <div
+    class="mt-2"
+    @dragover="onPanelDragOver"
+    @dragleave="onPanelDragLeave"
+    @drop="onPanelDrop"
+    :class="crossDropHighlight ? 'outline outline-2 outline-blue-500/60 rounded-lg' : ''"
+  >
+    <!-- Cross-container drop hint -->
+    <div
+      v-if="crossDropHighlight"
+      class="text-xs text-blue-300 bg-blue-900/30 border border-blue-600/50 rounded px-2 py-1 mb-1 text-center pointer-events-none"
+    >Drop to copy/move here</div>
+
     <!-- Header -->
     <button
       @click="toggleOpen()"
@@ -154,9 +166,12 @@
             @archive="archiveTask(task.id)"
             @set-review-status="(t, s) => setReviewStatus(t, s)"
             @add-subtask="addingSubtaskTo = task"
-            @dragstart="dragFrom = task.id"
+            @dragstart="onTaskDragStart(task.id)"
+            @dragend="onTaskDragEnd"
             @drop="dropOn(task.id)"
             @open-session="sid => emit('open-history', sid)"
+            @copy-to-container="t => openMoveDialog(t, 'copy')"
+            @move-to-container="t => openMoveDialog(t, 'move')"
           />
           <!-- Subtasks (children of this task), filtered when filters active -->
           <template v-for="(child, childIdx) in filteredChildren(task.id)" :key="child.id">
@@ -176,9 +191,12 @@
               @add-plan="addPlanFromMakePlan"
               @archive="archiveTask(child.id)"
               @set-review-status="(t, s) => setReviewStatus(t, s)"
-              @dragstart="dragFrom = child.id"
+              @dragstart="onTaskDragStart(child.id)"
+              @dragend="onTaskDragEnd"
               @drop="dropOn(child.id)"
               @open-session="sid => emit('open-history', sid)"
+              @copy-to-container="t => openMoveDialog(t, 'copy')"
+              @move-to-container="t => openMoveDialog(t, 'move')"
             />
           </template>
         </template>
@@ -302,6 +320,16 @@
       @close="archiveViewingFile = null"
       @saved="archiveViewingFile = null"
     />
+
+    <MoveTaskDialog
+      v-if="moveDialogTask"
+      :task="moveDialogTask"
+      :container-id="containerId"
+      :all-tasks="tasks"
+      :initial-mode="moveDialogMode"
+      @close="moveDialogTask = null"
+      @done="onMoveDialogDone"
+    />
   </div>
 </template>
 
@@ -311,9 +339,11 @@ import { usePlanq } from '../composables/usePlanq'
 import { useContainers } from '../composables/useContainers'
 import { usePlanqPanelState } from '../composables/usePanelState'
 import { useExpandedTasks } from '../composables/useExpandedTasks'
+import { useCrossContainerDrag } from '../composables/useCrossContainerDrag'
 import PlanqTaskRow from './PlanqTaskRow.vue'
 import AddTaskDialog from './AddTaskDialog.vue'
 import PlanqFileEditor from './PlanqFileEditor.vue'
+import MoveTaskDialog from './MoveTaskDialog.vue'
 import type { PlanqTask, PlanqItem, AutoTestPending, ReviewStatus } from '../types'
 import type { SubtaskEntry } from './AddTaskDialog.vue'
 
@@ -334,6 +364,7 @@ const emit = defineEmits<{
 const { addTask: apiAdd, updateTask: apiUpdate, deleteTask: apiDelete, reorderTasks: apiReorder, fetchArchive: apiFetchArchive, archiveTask: apiArchiveTask, unarchiveTask: apiUnarchiveTask, archiveDone: apiArchiveDone, respondToAutoTest: apiRespondAutoTest, getSettings: apiGetSettings, updateSettings: apiUpdateSettings } = usePlanq()
 const { updatePlanqTaskOptimistic } = useContainers()
 const { clearCached } = useExpandedTasks()
+const { dragTask: crossDragTask, dragContainerId: crossDragContainerId, startDrag: startCrossDrag, endDrag: endCrossDrag } = useCrossContainerDrag()
 
 const { open, toggle: toggleOpen } = usePlanqPanelState(props.containerId)
 const showAddDialog = ref(false)
@@ -341,6 +372,52 @@ const addingSubtaskTo = ref<PlanqTask | null>(null)
 const editingFile = ref<PlanqTask | null>(null)
 const archiveViewingFile = ref<string | null>(null)
 const dragFrom = ref<number | null>(null)
+
+// Move/copy dialog
+const moveDialogTask = ref<PlanqTask | null>(null)
+const moveDialogMode = ref<'copy' | 'move'>('copy')
+const crossDropHighlight = ref(false)
+
+function openMoveDialog(task: PlanqTask, mode: 'copy' | 'move') {
+  moveDialogTask.value = task
+  moveDialogMode.value = mode
+}
+
+function onMoveDialogDone() {
+  emit('tasks-changed')
+}
+
+// Cross-container drag: track dragstart/dragend globally
+function onTaskDragStart(taskId: number) {
+  dragFrom.value = taskId
+  const task = props.tasks.find(t => t.id === taskId)
+  if (task) startCrossDrag(task, props.containerId)
+}
+
+function onTaskDragEnd() {
+  endCrossDrag()
+}
+
+// Cross-container drop zone: when something dragged from another container is dropped here
+function onPanelDragOver(e: DragEvent) {
+  if (crossDragContainerId.value && crossDragContainerId.value !== props.containerId) {
+    e.preventDefault()
+    crossDropHighlight.value = true
+  }
+}
+
+function onPanelDragLeave() {
+  crossDropHighlight.value = false
+}
+
+function onPanelDrop(e: DragEvent) {
+  crossDropHighlight.value = false
+  if (!crossDragTask.value || crossDragContainerId.value === props.containerId) return
+  e.preventDefault()
+  e.stopPropagation()
+  openMoveDialog(crossDragTask.value, 'copy')
+  endCrossDrag()
+}
 
 // Default commit mode setting
 const defaultCommitMode = ref<'none' | 'auto-commit' | 'stage-commit' | 'manual-commit'>('none')

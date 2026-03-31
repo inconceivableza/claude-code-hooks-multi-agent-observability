@@ -2142,6 +2142,83 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     return json({ ok: true });
   }
 
+  // POST /planq/:id/tasks/:taskId/copy-to
+  if (pathname.match(/^\/planq\/[^/]+\/tasks\/\d+\/copy-to$/) && method === 'POST') {
+    const parts = pathname.split('/');
+    const containerId = decodeURIComponent(parts[2]!);
+    const taskId = parseInt(parts[4]!);
+    const container = getContainer(containerId);
+    if (!container) return err('Container not found', 404);
+
+    const body = await req.json() as { target_container_id: string };
+    const { target_container_id } = body;
+    if (!target_container_id) return err('target_container_id required');
+    const targetContainer = getContainer(target_container_id);
+    if (!targetContainer) return err('Target container not found', 404);
+
+    // Collect root task + subtasks (parent before children)
+    const allSourceTasks = getPlanqTasks(containerId);
+    const rootTask = allSourceTasks.find(t => t.id === taskId);
+    if (!rootTask) return err('Task not found', 404);
+
+    const tasksToCopy: typeof rootTask[] = [rootTask];
+    const collectSubtasks = (parentId: number) => {
+      for (const child of allSourceTasks.filter(t => t.parent_task_id === parentId)) {
+        tasksToCopy.push(child);
+        collectSubtasks(child.id);
+      }
+    };
+    collectSubtasks(rootTask.id);
+
+    const idMap = new Map<number, number>();
+    const copiedTaskIds: number[] = [];
+
+    for (const srcTask of tasksToCopy) {
+      const newTask = addPlanqTask(
+        target_container_id, srcTask.task_type, srcTask.filename, srcTask.description,
+        srcTask.auto_commit, srcTask.commit_mode, srcTask.plan_disposition, srcTask.auto_queue_plan
+      );
+      idMap.set(srcTask.id, newTask.id);
+      copiedTaskIds.push(newTask.id);
+
+      // Restore parent relationship using mapped IDs
+      const newParentId = srcTask.parent_task_id !== null ? idMap.get(srcTask.parent_task_id) ?? null : null;
+      const updates: Parameters<typeof updatePlanqTask>[1] = {};
+      if (newParentId !== null) { updates.parent_task_id = newParentId; updates.link_type = srcTask.link_type ?? 'follow-up'; }
+      if (srcTask.review_status && srcTask.review_status !== 'none') updates.review_status = srcTask.review_status;
+      if (Object.keys(updates).length) updatePlanqTask(newTask.id, updates);
+
+      // Determine parent_task_key for daemon placement
+      let parentTaskKey: string | undefined;
+      if (newParentId !== null) {
+        const parentNewTask = getPlanqTasks(target_container_id).find(t => t.id === newParentId);
+        parentTaskKey = parentNewTask?.filename ?? parentNewTask?.description ?? undefined;
+      }
+      sendApplyChanges(target_container_id, [{
+        id: crId(), type: 'add_task', source: 'dashboard', timestamp: Date.now() / 1000,
+        task_key: newTask.filename ?? newTask.description,
+        payload: {
+          task_type: newTask.task_type, filename: newTask.filename, description: newTask.description,
+          status: 'pending', commit_mode: newTask.commit_mode,
+          plan_disposition: newTask.plan_disposition, auto_queue_plan: newTask.auto_queue_plan,
+          parent_task_key: parentTaskKey,
+        },
+      }]);
+
+      // Copy file content between connected containers (best-effort)
+      if (srcTask.filename && containerWsMap.has(containerId) && containerWsMap.has(target_container_id)) {
+        const content = await relayFileRead(containerId, srcTask.filename).catch(() => null);
+        if (content !== null) {
+          await relayFileWrite(target_container_id, srcTask.filename, content).catch(() => {});
+        }
+      }
+    }
+
+    touchPlanqServerModified(target_container_id);
+    broadcastDashboard({ type: 'planq_update', data: { container_id: target_container_id, tasks: getPlanqTasks(target_container_id) } });
+    return json({ ok: true, task_ids: copiedTaskIds });
+  }
+
   // DELETE /planq/:id/tasks/:taskId
   if (pathname.match(/^\/planq\/[^/]+\/tasks\/\d+$/) && method === 'DELETE') {
     const parts = pathname.split('/');

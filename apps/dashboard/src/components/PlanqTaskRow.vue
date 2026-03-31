@@ -5,9 +5,11 @@
     :class="{ 'opacity-50': task.status === 'done', 'opacity-40 grayscale': task.status === 'deferred' || dimmed, 'bg-yellow-900/20': task.status === 'underway', 'bg-cyan-900/20': task.status === 'auto-queue', 'bg-purple-900/20': task.status === 'awaiting-commit', 'bg-teal-900/20': task.status === 'awaiting-plan' }"
     draggable="true"
     @dragstart="emit('dragstart', task.id)"
+    @dragend="emit('dragend')"
     @dragenter.prevent
     @dragover.prevent
     @drop="emit('drop', task.id)"
+    @contextmenu.prevent="openContextMenu"
   >
     <!-- Drag handle / link type badge -->
     <span v-if="!isChild" class="text-slate-600 cursor-grab text-xs select-none">⠿</span>
@@ -243,7 +245,107 @@
     <div v-else class="text-xs text-slate-500 italic">No feedback file found yet (plans/{{ derivedFeedbackFilename }}).</div>
   </div>
   </div>
+
+  <!-- Right-click context menu -->
+  <Teleport to="body">
+    <div
+      v-if="showContextMenu"
+      :style="{ position: 'fixed', left: contextMenuPos.x + 'px', top: contextMenuPos.y + 'px' }"
+      class="z-[9999] bg-slate-800 border border-slate-600 rounded-lg shadow-2xl py-1 min-w-[200px] text-xs"
+      @click.stop
+    >
+      <div class="px-2 py-1 text-slate-500 border-b border-slate-700 mb-0.5 font-mono truncate">
+        {{ task.task_type }}: {{ task.filename ?? task.description }}
+      </div>
+
+      <button @click="ctxCopy" class="ctx-item">⧉ Copy to clipboard</button>
+
+      <button
+        v-if="task.filename && task.status === 'pending'"
+        @click="ctxAction(() => emit('edit-file', task))"
+        class="ctx-item"
+      >✏️ {{ task.task_type === 'make-plan' ? 'Edit prompt' : 'Edit file' }}</button>
+
+      <button
+        v-if="!task.filename && task.status === 'pending'"
+        @click="ctxAction(startEditDesc)"
+        class="ctx-item"
+      >✏️ Edit description</button>
+
+      <template v-if="task.task_type !== 'auto-commit' && task.task_type !== 'manual-commit' && task.task_type !== 'manual-test' && task.task_type !== 'manual-task' && task.status !== 'awaiting-commit'">
+        <button @click="ctxAction(() => emit('set-commit-mode', task, nextCommitMode(task.commit_mode)))" class="ctx-item">
+          <span :class="commitModeButtonClass">⇒</span> {{ commitModeButtonTitle.split(' (')[0] }}
+        </button>
+      </template>
+
+      <button
+        v-if="task.status === 'pending' || task.status === 'auto-queue' || task.status === 'awaiting-commit'"
+        @click="ctxAction(() => emit('set-status', task, task.status === 'auto-queue' ? 'pending' : 'auto-queue'))"
+        class="ctx-item"
+      >⏱ {{ task.status === 'auto-queue' ? 'Remove from auto-queue' : 'Add to auto-queue' }}</button>
+
+      <button
+        v-if="task.status === 'pending' || task.status === 'underway' || task.status === 'awaiting-commit' || task.status === 'awaiting-plan'"
+        @click="ctxAction(() => emit('set-status', task, task.status === 'underway' ? 'pending' : 'underway'))"
+        class="ctx-item"
+      >⏳ {{ task.status === 'underway' ? 'Mark inactive' : 'Mark underway' }}</button>
+
+      <button
+        v-if="task.status === 'pending' || task.status === 'deferred'"
+        @click="ctxAction(() => emit('set-status', task, task.status === 'deferred' ? 'pending' : 'deferred'))"
+        class="ctx-item"
+      >💤 {{ task.status === 'deferred' ? 'Un-defer' : 'Defer (skip for now)' }}</button>
+
+      <button
+        @click="ctxAction(() => emit('set-status', task, task.status === 'done' ? 'pending' : 'done'))"
+        class="ctx-item"
+      >{{ task.status === 'done' ? '↩ Mark pending' : '✓ Mark done' }}</button>
+
+      <button
+        v-if="showAddPlan"
+        @click="ctxAction(() => emit('add-plan', derivedPlanFilename!))"
+        class="ctx-item text-purple-400"
+      >📋 Add plan to queue</button>
+
+      <button
+        v-if="task.status === 'done'"
+        @click="ctxAction(() => emit('archive', task.id))"
+        class="ctx-item"
+      >🗄️ Archive</button>
+
+      <button
+        v-if="!isChild && effectiveFilename"
+        @click="ctxAction(() => emit('add-subtask', task))"
+        class="ctx-item"
+      >⊕ Add subtask</button>
+
+      <div class="border-t border-slate-700 my-0.5"></div>
+
+      <button
+        @click="ctxAction(() => emit('copy-to-container', task))"
+        class="ctx-item"
+      >→ Copy to container</button>
+
+      <button
+        @click="ctxAction(() => emit('move-to-container', task))"
+        class="ctx-item"
+      >↔ Move to container</button>
+
+      <div class="border-t border-slate-700 my-0.5"></div>
+
+      <button
+        @click="ctxAction(() => emit('delete', task.id))"
+        class="ctx-item text-red-400 hover:text-red-300"
+      >✕ Delete</button>
+    </div>
+  </Teleport>
 </template>
+
+<style scoped>
+.ctx-item {
+  @apply flex items-center gap-1.5 w-full text-left px-3 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-slate-100;
+}
+</style>
 
 <script setup lang="ts">
 import { ref, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
@@ -271,12 +373,15 @@ const emit = defineEmits<{
   'update-desc': [id: number, desc: string]
   'set-commit-mode': [task: PlanqTask, mode: 'none' | 'auto' | 'stage' | 'manual']
   'dragstart': [id: number]
+  'dragend': []
   'drop': [id: number]
   'add-plan': [planFilename: string]
   'archive': [id: number]
   'set-review-status': [task: PlanqTask, status: ReviewStatus]
   'add-subtask': [task: PlanqTask]
   'open-session': [sessionId: string]
+  'copy-to-container': [task: PlanqTask]
+  'move-to-container': [task: PlanqTask]
 }>()
 
 const { readFile } = usePlanq()
@@ -450,13 +555,43 @@ function closeReviewDropdown() {
   showReviewDropdown.value = false
 }
 
+// ── Context menu ──────────────────────────────────────────────────────────────
+
+const showContextMenu = ref(false)
+const contextMenuPos = ref({ x: 0, y: 0 })
+
+function openContextMenu(e: MouseEvent) {
+  const x = Math.min(e.clientX, window.innerWidth - 220)
+  const y = Math.min(e.clientY, window.innerHeight - 400)
+  contextMenuPos.value = { x, y }
+  showContextMenu.value = true
+}
+
+function closeContextMenu() {
+  showContextMenu.value = false
+}
+
+function ctxAction(fn: () => void) {
+  closeContextMenu()
+  fn()
+}
+
+async function ctxCopy() {
+  closeContextMenu()
+  await copyToClipboard()
+}
+
 onMounted(() => {
   document.addEventListener('click', closeReviewDropdown)
+  document.addEventListener('click', closeContextMenu)
   document.addEventListener('scroll', closeReviewDropdown, true)
+  document.addEventListener('scroll', closeContextMenu, true)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('click', closeReviewDropdown)
+  document.removeEventListener('click', closeContextMenu)
   document.removeEventListener('scroll', closeReviewDropdown, true)
+  document.removeEventListener('scroll', closeContextMenu, true)
 })
 
 // ── Description popup ─────────────────────────────────────────────────────────

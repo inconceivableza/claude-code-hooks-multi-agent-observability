@@ -186,6 +186,20 @@ export function usePlanq() {
     }
   }
 
-  return { addTask, updateTask, deleteTask, reorderTasks, readFile, writeFile, listPlansFiles, fetchArchive, archiveTask, unarchiveTask, archiveDone, respondToAutoTest, getSettings, updateSettings }
+  async function copyTaskTo(containerId: string, taskId: number, targetContainerId: string): Promise<{ ok: boolean; task_ids: number[] }> {
+    try {
+      const res = await fetch(`${API_BASE}/planq/${encodeURIComponent(containerId)}/tasks/${taskId}/copy-to`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_container_id: targetContainerId }),
+      })
+      if (!res.ok) return { ok: false, task_ids: [] }
+      return await res.json()
+    } catch {
+      return { ok: false, task_ids: [] }
+    }
+  }
+
+  return { addTask, updateTask, deleteTask, reorderTasks, readFile, writeFile, listPlansFiles, fetchArchive, archiveTask, unarchiveTask, archiveDone, respondToAutoTest, getSettings, updateSettings, copyTaskTo }
 
 }
