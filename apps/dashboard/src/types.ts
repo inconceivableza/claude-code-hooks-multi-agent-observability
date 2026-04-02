@@ -40,6 +40,7 @@ export interface PlanqTask {
   parent_task_id: number | null
   link_type: 'follow-up' | 'fix-required' | 'check' | 'other' | null
   session_ids: string[]
+  done_at: number | null
 }
 
 export interface PlanqItem {

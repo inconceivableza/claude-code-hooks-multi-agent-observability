@@ -3,10 +3,11 @@
     class="flex flex-col"
     :class="effectiveNestLevel > 0 ? 'border-l border-slate-700/60 ml-1' : ''"
     :style="effectiveNestLevel > 0 ? { paddingLeft: `${effectiveNestLevel * 1.25}rem` } : {}"
+    :data-task-id="task.id"
   >
   <div
-    class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-700/50 group"
-    :class="{ 'opacity-50': task.status === 'done', 'opacity-40 grayscale': task.status === 'deferred' || dimmed, 'bg-yellow-900/20': task.status === 'underway', 'bg-cyan-900/20': task.status === 'auto-queue', 'bg-purple-900/20': task.status === 'awaiting-commit', 'bg-teal-900/20': task.status === 'awaiting-plan' }"
+    class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-700/50 group transition-colors"
+    :class="{ 'opacity-50': task.status === 'done', 'opacity-40 grayscale': task.status === 'deferred' || dimmed, 'bg-yellow-900/20': task.status === 'underway' && !highlighted, 'bg-cyan-900/20': task.status === 'auto-queue' && !highlighted, 'bg-purple-900/20': task.status === 'awaiting-commit' && !highlighted, 'bg-teal-900/20': task.status === 'awaiting-plan' && !highlighted, 'ring-1 ring-yellow-400/70 bg-yellow-900/30': highlighted }"
     draggable="true"
     @dragstart="emit('dragstart', task.id)"
     @dragend="emit('dragend')"
@@ -17,10 +18,13 @@
   >
     <!-- Drag handle / link type badge -->
     <span v-if="effectiveNestLevel === 0" class="text-slate-600 cursor-grab text-xs select-none">⠿</span>
-    <span v-else-if="linkType === 'fix-required'" class="text-red-500 text-xs shrink-0 cursor-grab select-none" title="fix-required (drag to reorder)">🔧</span>
-    <span v-else-if="linkType === 'check'" class="text-blue-400 text-xs shrink-0 cursor-grab select-none" title="check (drag to reorder)">✓</span>
-    <span v-else-if="linkType === 'other'" class="text-slate-400 text-xs shrink-0" title="other">·</span>
-    <span v-else class="text-purple-400 text-xs shrink-0" title="follow-up">↳</span>
+    <button
+      v-else
+      @click.stop="task.parent_task_id != null && emit('navigate-to-parent', task.parent_task_id)"
+      class="text-xs shrink-0 hover:text-slate-200"
+      :class="linkType === 'fix-required' ? 'text-red-400' : linkType === 'check' ? 'text-blue-400' : 'text-purple-400'"
+      :title="`← Go to parent (${linkType ?? 'follow-up'})`"
+    >←</button>
 
     <!-- Position -->
     <span class="text-xs text-slate-500 w-4 text-right shrink-0">{{ position }}</span>
@@ -385,6 +389,7 @@ const props = defineProps<{
   nestLevel?: number
   linkType?: 'follow-up' | 'fix-required' | 'check' | 'other' | null
   dimmed?: boolean
+  highlighted?: boolean
   plansFilesList?: string[]
 }>()
 
@@ -403,6 +408,7 @@ const emit = defineEmits<{
   'add-subtask': [task: PlanqTask]
   'open-session': [sessionId: string]
   'open-git-view': [repo: string, hash: string]
+  'navigate-to-parent': [parentId: number]
   'copy-to-container': [task: PlanqTask]
   'move-to-container': [task: PlanqTask]
 }>()
