@@ -52,8 +52,8 @@
         @click.stop="toggleFeedbackOpen"
         class="shrink-0 text-xs px-1"
         :class="isFeedbackOpen(taskKey) ? 'text-indigo-300 hover:text-indigo-200' : 'text-slate-500 hover:text-slate-300'"
-        :title="task.task_type === 'investigate' ? 'Show investigation feedback' : 'Show task feedback/summary'"
-      >{{ isFeedbackOpen(taskKey) ? 'hide feedback' : 'feedback' }}</button>
+        :title="task.task_type === 'investigate' ? 'Show investigation feedback' : task.task_type === 'make-plan' ? 'Show generated plan' : 'Show task feedback/summary'"
+      >{{ isFeedbackOpen(taskKey) ? `hide ${feedbackLabel}` : feedbackLabel }}</button>
       <span v-if="task.commit_mode === 'auto' || task.auto_commit" class="shrink-0 text-green-500" title="Auto-commit after">⇒</span>
       <span v-else-if="task.commit_mode === 'stage'" class="shrink-0 text-blue-400" title="Stage-commit after (Claude stages, you commit)">⇒</span>
       <span v-else-if="task.commit_mode === 'manual'" class="shrink-0 text-orange-400" title="Manual-commit after (you stage and commit)">⇒</span>
@@ -242,11 +242,11 @@
       <span v-if="containerInfo?.machine_hostname && containerInfo?.container_hostname" class="text-slate-700">·</span>
       <span v-if="containerInfo?.container_hostname" class="font-mono">{{ containerInfo.container_hostname }}</span>
       <span v-if="containerInfo" class="text-slate-700">·</span>
-      <span class="font-mono text-slate-400">{{ task.task_type }}: {{ task.filename }} (feedback)</span>
+      <span class="font-mono text-slate-400">{{ task.task_type }}: {{ task.filename }} ({{ feedbackLabel }})</span>
     </div>
     <div v-if="loadingFeedback" class="text-xs text-slate-500">Loading…</div>
     <MarkdownContent v-else-if="getFeedbackCached(taskKey)" :content="getFeedbackCached(taskKey)!" />
-    <div v-else class="text-xs text-slate-500 italic">No feedback file found yet (plans/{{ derivedFeedbackFilename }}).</div>
+    <div v-else class="text-xs text-slate-500 italic">No {{ feedbackLabel }} file found yet (plans/{{ derivedFeedbackFilename }}).</div>
   </div>
   </div>
 
@@ -487,11 +487,16 @@ const derivedFeedbackFilename = computed(() => {
   if (props.task.task_type === 'investigate') {
     return fn.replace(/^investigate-/, 'feedback-')
   }
-  if (['task', 'plan', 'make-plan'].includes(props.task.task_type)) {
+  if (props.task.task_type === 'make-plan') {
+    return derivedPlanFilename.value
+  }
+  if (['task', 'plan'].includes(props.task.task_type)) {
     return `feedback-${fn}`
   }
   return null
 })
+
+const feedbackLabel = computed(() => props.task.task_type === 'make-plan' ? 'plan' : 'feedback')
 
 const feedbackFileExists = computed(() => {
   const fn = derivedFeedbackFilename.value
