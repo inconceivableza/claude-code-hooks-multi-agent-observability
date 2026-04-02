@@ -1864,39 +1864,11 @@ cmd_mark() {
                     fi
                 fi
                 _auto_set_review_ready
-                # Append commits made since mark:underway to the feedback file
-                if [ -n "$task_value" ] && [ "$task_type" != "unnamed-task" ]; then
-                    local _sha_dir="$WORKSPACE_ROOT/.claude/planq-sha"
-                    local _sha_file="$_sha_dir/${task_value}.sha"
-                    if [ -f "$_sha_file" ]; then
-                        local _since_sha _commits
-                        _since_sha="$(cat "$_sha_file")"
-                        _commits="$(git -C "$WORKSPACE_ROOT" log --oneline "${_since_sha}..HEAD" 2>/dev/null || true)"
-                        if [ -n "$_commits" ]; then
-                            local _feedback_file
-                            if [ "$task_type" = "investigate" ]; then
-                                _feedback_file="$PLANS_DIR/${task_value/#investigate-/feedback-}"
-                            else
-                                _feedback_file="$PLANS_DIR/feedback-${task_value}"
-                            fi
-                            if [ -f "$_feedback_file" ]; then
-                                printf '\n\n## Commits\n\n```\n%s\n```\n' "$_commits" >> "$_feedback_file"
-                            fi
-                        fi
-                        rm -f "$_sha_file"
-                    fi
-                fi
                 ;;
             underway)
                 _mark_underway "$line_num" "$task_line"
                 echo "Marked as underway."
                 _auto_set_review_developing
-                # Record HEAD SHA so mark:done can append commits to feedback
-                if [ -n "$task_value" ] && [ "$task_type" != "unnamed-task" ]; then
-                    local _sha_dir="$WORKSPACE_ROOT/.claude/planq-sha"
-                    mkdir -p "$_sha_dir"
-                    git -C "$WORKSPACE_ROOT" rev-parse HEAD 2>/dev/null > "$_sha_dir/${task_value}.sha" || true
-                fi
                 ;;
             inactive)         _mark_inactive        "$line_num" "$task_line"; echo "Marked as inactive (pending)." ;;
             queue)            _mark_auto_queue      "$line_num" "$task_line"; echo "Marked as auto-queue." ;;
