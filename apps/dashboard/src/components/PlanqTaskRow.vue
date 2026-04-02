@@ -245,7 +245,24 @@
       <span class="font-mono text-slate-400">{{ task.task_type }}: {{ task.filename }} ({{ feedbackLabel }})</span>
     </div>
     <div v-if="loadingFeedback" class="text-xs text-slate-500">Loading…</div>
-    <MarkdownContent v-else-if="getFeedbackCached(taskKey)" :content="getFeedbackCached(taskKey)!" />
+    <template v-else-if="getFeedbackCached(taskKey)">
+      <MarkdownContent v-if="feedbackMainContent" :content="feedbackMainContent" />
+      <div v-if="feedbackCommits.length > 0" class="mt-1.5 pt-1.5 border-t border-indigo-800/40">
+        <div class="text-xs text-slate-500 mb-0.5">Commits</div>
+        <div class="flex flex-col gap-0.5">
+          <button
+            v-for="commit in feedbackCommits"
+            :key="commit.hash"
+            @click="emit('open-git-view', containerInfo?.source_repo ?? '', commit.hash)"
+            class="flex items-center gap-1.5 text-left text-xs font-mono hover:bg-slate-700/40 rounded px-1 py-0.5"
+            :title="`Open commit ${commit.hash} in git view`"
+          >
+            <span class="text-blue-400 shrink-0">{{ commit.hash.slice(0, 7) }}</span>
+            <span class="text-slate-400 truncate">{{ commit.message }}</span>
+          </button>
+        </div>
+      </div>
+    </template>
     <div v-else class="text-xs text-slate-500 italic">No {{ feedbackLabel }} file found yet (plans/{{ derivedFeedbackFilename }}).</div>
   </div>
   </div>
@@ -385,6 +402,7 @@ const emit = defineEmits<{
   'set-review-status': [task: PlanqTask, status: ReviewStatus]
   'add-subtask': [task: PlanqTask]
   'open-session': [sessionId: string]
+  'open-git-view': [repo: string, hash: string]
   'copy-to-container': [task: PlanqTask]
   'move-to-container': [task: PlanqTask]
 }>()
@@ -513,6 +531,28 @@ async function toggleFeedbackOpen() {
     loadingFeedback.value = false
   }
 }
+
+// Extract commits section from feedback content
+const COMMITS_MARKER = /\n\n## Commits\n/
+const feedbackMainContent = computed(() => {
+  const content = getFeedbackCached(taskKey.value)
+  if (!content) return content
+  const idx = content.search(COMMITS_MARKER)
+  return idx >= 0 ? content.slice(0, idx) : content
+})
+const feedbackCommits = computed((): Array<{ hash: string; message: string }> => {
+  const content = getFeedbackCached(taskKey.value)
+  if (!content) return []
+  const m = content.match(COMMITS_MARKER)
+  if (!m) return []
+  const section = content.slice(content.indexOf(m[0]) + m[0].length)
+  return section.split('\n')
+    .map(line => {
+      const lm = line.match(/^([0-9a-f]{7,40}) (.+)$/)
+      return lm ? { hash: lm[1], message: lm[2] } : null
+    })
+    .filter(Boolean) as Array<{ hash: string; message: string }>
+})
 
 // ── Review status ─────────────────────────────────────────────────────────────
 

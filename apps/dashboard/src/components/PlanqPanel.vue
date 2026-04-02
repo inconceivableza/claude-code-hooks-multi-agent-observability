@@ -172,6 +172,7 @@
             @dragend="onTaskDragEnd"
             @drop="dropOn(item.task.id)"
             @open-session="sid => emit('open-history', sid)"
+            @open-git-view="(repo, hash) => emit('open-git-view', repo, hash)"
             @copy-to-container="t => openMoveDialog(t, 'copy')"
             @move-to-container="t => openMoveDialog(t, 'move')"
           />
@@ -335,6 +336,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'tasks-changed': []
   'open-history': [sessionId: string]
+  'open-git-view': [repo: string, hash: string]
 }>()
 
 const { addTask: apiAdd, updateTask: apiUpdate, deleteTask: apiDelete, reorderTasks: apiReorder, fetchArchive: apiFetchArchive, archiveTask: apiArchiveTask, unarchiveTask: apiUnarchiveTask, archiveDone: apiArchiveDone, respondToAutoTest: apiRespondAutoTest, getSettings: apiGetSettings, updateSettings: apiUpdateSettings } = usePlanq()

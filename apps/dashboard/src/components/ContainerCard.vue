@@ -256,6 +256,7 @@
       :plans-files-list="container.plans_files_list"
       @tasks-changed="emit('tasks-changed')"
       @open-history="sid => emit('open-history', container.id, sid)"
+      @open-git-view="(repo, hash) => emit('open-git-view', repo, hash)"
     />
   </div>
 </template>
