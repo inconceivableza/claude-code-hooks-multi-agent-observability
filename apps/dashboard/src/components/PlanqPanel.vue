@@ -330,9 +330,10 @@
     <MoveTaskDialog
       v-if="moveDialogTask"
       :task="moveDialogTask"
-      :container-id="containerId"
+      :container-id="moveDialogSourceContainerId"
       :all-tasks="tasks"
       :initial-mode="moveDialogMode"
+      :initial-target-container-id="moveDialogTargetContainerId"
       @close="moveDialogTask = null"
       @done="onMoveDialogDone"
     />
@@ -428,11 +429,16 @@ function navigateToTask(taskId: number) {
 // Move/copy dialog
 const moveDialogTask = ref<PlanqTask | null>(null)
 const moveDialogMode = ref<'copy' | 'move'>('copy')
+const moveDialogSourceContainerId = ref(props.containerId)
+const moveDialogTargetContainerId = ref<string | undefined>(undefined)
 const crossDropHighlight = ref(false)
 
-function openMoveDialog(task: PlanqTask, mode: 'copy' | 'move') {
+function openMoveDialog(task: PlanqTask, mode: 'copy' | 'move', targetContainerId?: string) {
   moveDialogTask.value = task
   moveDialogMode.value = mode
+  // For drag: task is from another container; source is that container, target is this panel
+  moveDialogSourceContainerId.value = targetContainerId ? task.container_id : props.containerId
+  moveDialogTargetContainerId.value = targetContainerId
 }
 
 function onMoveDialogDone() {
@@ -467,7 +473,7 @@ function onPanelDrop(e: DragEvent) {
   if (!crossDragTask.value || crossDragContainerId.value === props.containerId) return
   e.preventDefault()
   e.stopPropagation()
-  openMoveDialog(crossDragTask.value, 'copy')
+  openMoveDialog(crossDragTask.value, 'copy', props.containerId)
   endCrossDrag()
 }
 
