@@ -18,7 +18,7 @@
         :title="rendered ? 'Switch to plain text' : 'Switch to rendered markdown'"
       >{{ rendered ? 'txt' : 'md' }}</button>
     </div>
-    <div v-if="rendered" class="md-body md-scroll" v-html="html" />
+    <div v-if="rendered" class="md-body md-scroll" v-html="html" @click="handleHashClick" />
     <pre v-else class="md-pre md-scroll">{{ content }}</pre>
   </div>
 
@@ -43,7 +43,7 @@
           <button @click="expanded = false" class="text-slate-400 hover:text-slate-200 text-xl leading-none px-1">×</button>
         </div>
         <div class="flex-1 overflow-y-auto p-6 min-h-0">
-          <div v-if="rendered" class="md-body md-modal-body" v-html="html" />
+          <div v-if="rendered" class="md-body md-modal-body" v-html="html" @click="handleHashClick" />
           <pre v-else class="text-sm font-mono whitespace-pre-wrap break-words text-slate-300">{{ content }}</pre>
         </div>
       </div>
@@ -56,12 +56,21 @@ import { ref, computed } from 'vue'
 import { renderMarkdown } from '../composables/useMarkdown'
 
 const props = defineProps<{ content: string }>()
+const emit = defineEmits<{ 'git-hash-click': [hash: string] }>()
 
 const rendered = ref(true)
 const expanded = ref(false)
 
 const isMultiLine = computed(() => props.content.trim().includes('\n'))
 const html = computed(() => renderMarkdown(props.content))
+
+function handleHashClick(e: MouseEvent) {
+  const btn = (e.target as HTMLElement).closest('[data-git-hash]') as HTMLElement | null
+  if (btn) {
+    const hash = btn.getAttribute('data-git-hash')
+    if (hash) emit('git-hash-click', hash)
+  }
+}
 </script>
 
 <style scoped>
@@ -194,4 +203,17 @@ const html = computed(() => renderMarkdown(props.content))
   color: #cbd5e1;
 }
 .md-body :deep(tr:nth-child(even) td) { background: rgba(15,23,42,0.3); }
+
+.md-body :deep(.git-hash) {
+  font-family: monospace;
+  font-size: 0.7rem;
+  color: #60a5fa; /* blue-400 */
+  background: rgba(30, 58, 138, 0.25);
+  padding: 0 3px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: none;
+  line-height: inherit;
+}
+.md-body :deep(.git-hash:hover) { color: #93c5fd; text-decoration: underline; }
 </style>

@@ -50,6 +50,7 @@ import {
   getSessionsForTask,
   getTasksForSession,
   getCommitsForSession,
+  findCommitRepo,
   type ChangeRequest,
   type ContainerRow,
   type PlanqTaskRow,
@@ -1810,6 +1811,16 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const hostMap = branchLastCommit.get(repo) ?? new Map<string, number>();
     const updates = [...hostMap.entries()].map(([host, lastCommitAt]) => ({ host, lastCommitAt }));
     return json(updates);
+  }
+
+  // POST /dashboard/find-commit — find which of the candidate repos contains a hash
+  if (pathname === '/dashboard/find-commit' && method === 'POST') {
+    const body = await req.json().catch(() => null);
+    const hash: string = body?.hash ?? '';
+    const repos: string[] = Array.isArray(body?.repos) ? body.repos : [];
+    if (!hash || repos.length === 0) return json({ repo: null });
+    const found = findCommitRepo(hash, repos);
+    return json({ repo: found });
   }
 
   // GET /dashboard/github-prs/:owner/:repo — fetch open PRs from GitHub API

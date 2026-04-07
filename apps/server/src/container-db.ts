@@ -1098,6 +1098,16 @@ export function getGitTips(sourceRepo: string): string[] {
   return rows.filter(r => !parentSet.has(r.hash)).map(r => r.hash);
 }
 
+/** Find which candidate repo (primary + submodule paths) contains the given commit hash (prefix match). */
+export function findCommitRepo(hash: string, candidateRepos: string[]): string | null {
+  const stmt = db.prepare('SELECT 1 FROM git_commits WHERE source_repo = ? AND hash LIKE ?');
+  for (const repo of candidateRepos) {
+    const found = stmt.get(repo, `${hash}%`);
+    if (found) return repo;
+  }
+  return null;
+}
+
 export function upsertGitCommitRefs(sourceRepo: string, machineHostname: string, commits: StoredGitCommit[]): void {
   const upsert = db.prepare(
     'INSERT INTO git_commit_refs (source_repo, hash, machine_hostname, refs) VALUES (?, ?, ?, ?) ON CONFLICT(source_repo, hash, machine_hostname) DO UPDATE SET refs = excluded.refs'

@@ -33,6 +33,10 @@ export function renderMarkdown(raw: string): string {
       const safe = /^(https?:|mailto:|\/|#)/.test(url) ? url : '#'
       return `<a href="${esc(safe)}" target="_blank" rel="noopener">${text}</a>`
     })
+    // Git commit hashes (7-40 lowercase hex chars, word-bounded)
+    s = s.replace(/\b([0-9a-f]{7,40})\b/g, (_, h) =>
+      `<button class="git-hash" data-git-hash="${h}">${h}</button>`
+    )
     // Restore inline code
     s = s.replace(/\x00code(\d+)\x00/g, (_, i) => `<code>${esc(codeParts[Number(i)])}</code>`)
     return s

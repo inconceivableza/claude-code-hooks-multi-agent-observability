@@ -76,6 +76,7 @@
       :initial-container-id="historyContainerId"
       :initial-session-id="historySessionId"
       @close="historyContainerId = null; historySessionId = null"
+      @open-git-view="openGitView"
     />
 
     <!-- Git View Dialog -->

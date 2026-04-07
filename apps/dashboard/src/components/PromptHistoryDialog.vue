@@ -126,7 +126,7 @@
                 copy
               </button>
             </div>
-            <MarkdownContent v-if="renderMarkdown" :content="block.text" class="text-sm text-slate-100" />
+            <MarkdownContent v-if="renderMarkdown" :content="block.text" class="text-sm text-slate-100" @git-hash-click="handleHashClick" />
             <pre v-else class="text-sm text-slate-100 whitespace-pre-wrap font-sans leading-relaxed">{{ block.text }}</pre>
           </div>
 
@@ -142,7 +142,7 @@
                 copy
               </button>
             </div>
-            <MarkdownContent v-if="renderMarkdown" :content="block.text" class="text-sm text-slate-300" />
+            <MarkdownContent v-if="renderMarkdown" :content="block.text" class="text-sm text-slate-300" @git-hash-click="handleHashClick" />
             <pre v-else class="text-sm text-slate-300 whitespace-pre-wrap font-sans leading-relaxed">{{ block.text }}</pre>
           </div>
 
@@ -162,10 +162,13 @@
                 copy
               </button>
             </div>
+            <!-- eslint-disable-next-line vue/no-v-html -->
             <pre
               v-if="block.text"
-              class="text-xs text-slate-500 whitespace-pre-wrap font-mono max-h-40 overflow-y-auto"
-            >{{ block.text }}</pre>
+              class="text-xs text-slate-500 whitespace-pre-wrap font-mono max-h-40 overflow-y-auto tool-output"
+              v-html="hashifiedHtml(block.text)"
+              @click="handleToolOutputClick"
+            />
           </div>
         </template>
         <div
@@ -195,7 +198,10 @@ const props = defineProps<{
   initialSessionId: string;
 }>();
 
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{
+  close: []
+  'open-git-view': [repo: string, hash: string]
+}>();
 
 const { alias } = useHostnameAliases();
 
@@ -263,6 +269,40 @@ const activeContainerId = computed(() => {
   return availableSessions.value.find(s => s.session_id === selectedSessionId.value)?.container_id
     ?? props.initialContainerId;
 });
+
+const activeContainer = computed(() =>
+  props.containers.find(c => c.id === activeContainerId.value)
+);
+
+/** Candidate repos for commit lookup: primary repo + submodule paths. */
+const candidateRepos = computed((): string[] => {
+  const c = activeContainer.value;
+  if (!c) return [];
+  const repos = [c.source_repo];
+  for (const sub of c.git_submodules) {
+    repos.push(`${c.source_repo}/${sub.path}`);
+  }
+  return repos;
+});
+
+/** Open the git view for the repo that contains the given commit hash. */
+async function handleHashClick(hash: string) {
+  const repos = candidateRepos.value;
+  if (repos.length === 0) return;
+  try {
+    const res = await fetch(`${API_BASE}/dashboard/find-commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hash, repos }),
+    });
+    if (res.ok) {
+      const { repo } = await res.json();
+      emit('open-git-view', repo ?? repos[0], hash);
+      return;
+    }
+  } catch { /* fall through */ }
+  emit('open-git-view', repos[0], hash);
+}
 
 // ── Cascade resets when filters change ───────────────────────────────────────
 
@@ -489,6 +529,26 @@ async function refresh() {
   }
 }
 
+/** Escape HTML and wrap git hashes in clickable buttons for tool output. */
+function hashifiedHtml(text: string): string {
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+  return escaped.replace(/\b([0-9a-f]{7,40})\b/g, (_, h) =>
+    `<button class="tool-hash" data-git-hash="${h}">${h}</button>`
+  )
+}
+
+function handleToolOutputClick(e: MouseEvent) {
+  const btn = (e.target as HTMLElement).closest('[data-git-hash]') as HTMLElement | null
+  if (btn) {
+    const hash = btn.getAttribute('data-git-hash')
+    if (hash) handleHashClick(hash)
+  }
+}
+
 async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -510,3 +570,18 @@ onMounted(() => {
 });
 onUnmounted(() => window.removeEventListener("keydown", onGlobalKey));
 </script>
+
+<style scoped>
+.tool-output :deep(.tool-hash) {
+  font-family: monospace;
+  font-size: inherit;
+  color: #60a5fa;
+  background: rgba(30, 58, 138, 0.25);
+  padding: 0 2px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: none;
+  line-height: inherit;
+}
+.tool-output :deep(.tool-hash:hover) { color: #93c5fd; text-decoration: underline; }
+</style>
