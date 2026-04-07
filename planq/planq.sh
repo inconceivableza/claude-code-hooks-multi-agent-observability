@@ -1853,14 +1853,18 @@ cmd_mark() {
                 # For make-plan with +add-after or +add-end, insert the plan task
                 if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; } && [[ "$raw_line" != *"[done]"* ]]; then
                     local target_plan="${task_value/#make-plan-/plan-}"
-                    local new_plan_task="- plan: ${target_plan}"
-                    [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
-                    if [ -n "$task_add_after" ]; then
-                        _insert_after_line "$line_num" "$new_plan_task"
-                        echo "make-plan: Added 'plan: ${target_plan}' after current position."
+                    if grep -qF "plan: ${target_plan}" "$PLANQ_FILE" 2>/dev/null; then
+                        echo "make-plan: Plan 'plan: ${target_plan}' already in queue, skipping."
                     else
-                        printf '\n%s\n' "$new_plan_task" >> "$PLANQ_FILE"
-                        echo "make-plan: Added 'plan: ${target_plan}' at end of queue."
+                        local new_plan_task="- plan: ${target_plan}"
+                        [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
+                        if [ -n "$task_add_after" ]; then
+                            _insert_after_line "$line_num" "$new_plan_task"
+                            echo "make-plan: Added 'plan: ${target_plan}' after current position."
+                        else
+                            printf '\n%s\n' "$new_plan_task" >> "$PLANQ_FILE"
+                            echo "make-plan: Added 'plan: ${target_plan}' at end of queue."
+                        fi
                     fi
                 fi
                 _auto_set_review_ready
