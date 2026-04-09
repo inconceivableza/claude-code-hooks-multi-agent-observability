@@ -3,10 +3,11 @@
     class="flex flex-col"
     :class="effectiveNestLevel > 0 ? 'border-l border-slate-700/60 ml-1' : ''"
     :style="effectiveNestLevel > 0 ? { paddingLeft: `${effectiveNestLevel * 1.25}rem` } : {}"
+    :data-task-id="task.id"
   >
   <div
-    class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-700/50 group"
-    :class="{ 'opacity-50': task.status === 'done', 'opacity-40 grayscale': task.status === 'deferred' || dimmed, 'bg-yellow-900/20': task.status === 'underway', 'bg-cyan-900/20': task.status === 'auto-queue', 'bg-purple-900/20': task.status === 'awaiting-commit', 'bg-teal-900/20': task.status === 'awaiting-plan' }"
+    class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-slate-700/50 group transition-colors"
+    :class="{ 'opacity-50': task.status === 'done', 'opacity-40 grayscale': task.status === 'deferred' || dimmed, 'bg-yellow-900/20': task.status === 'underway' && !highlighted, 'bg-cyan-900/20': task.status === 'auto-queue' && !highlighted, 'bg-purple-900/20': task.status === 'awaiting-commit' && !highlighted, 'bg-teal-900/20': task.status === 'awaiting-plan' && !highlighted, 'ring-1 ring-yellow-400/70 bg-yellow-900/30': highlighted }"
     draggable="true"
     @dragstart="emit('dragstart', task.id)"
     @dragend="emit('dragend')"
@@ -17,10 +18,13 @@
   >
     <!-- Drag handle / link type badge -->
     <span v-if="effectiveNestLevel === 0" class="text-slate-600 cursor-grab text-xs select-none">⠿</span>
-    <span v-else-if="linkType === 'fix-required'" class="text-red-500 text-xs shrink-0 cursor-grab select-none" title="fix-required (drag to reorder)">🔧</span>
-    <span v-else-if="linkType === 'check'" class="text-blue-400 text-xs shrink-0 cursor-grab select-none" title="check (drag to reorder)">✓</span>
-    <span v-else-if="linkType === 'other'" class="text-slate-400 text-xs shrink-0" title="other">·</span>
-    <span v-else class="text-purple-400 text-xs shrink-0" title="follow-up">↳</span>
+    <button
+      v-else
+      @click.stop="task.parent_task_id != null && emit('navigate-to-parent', task.parent_task_id)"
+      class="text-xs shrink-0 hover:text-slate-200"
+      :class="linkType === 'fix-required' ? 'text-red-400' : linkType === 'check' ? 'text-blue-400' : 'text-purple-400'"
+      :title="`← Go to parent (${linkType ?? 'follow-up'})`"
+    >←</button>
 
     <!-- Position -->
     <span class="text-xs text-slate-500 w-4 text-right shrink-0">{{ position }}</span>
@@ -52,8 +56,8 @@
         @click.stop="toggleFeedbackOpen"
         class="shrink-0 text-xs px-1"
         :class="isFeedbackOpen(taskKey) ? 'text-indigo-300 hover:text-indigo-200' : 'text-slate-500 hover:text-slate-300'"
-        :title="task.task_type === 'investigate' ? 'Show investigation feedback' : 'Show task feedback/summary'"
-      >{{ isFeedbackOpen(taskKey) ? 'hide feedback' : 'feedback' }}</button>
+        :title="task.task_type === 'investigate' ? 'Show investigation feedback' : task.task_type === 'make-plan' ? 'Show generated plan' : 'Show task feedback/summary'"
+      >{{ isFeedbackOpen(taskKey) ? `hide ${feedbackLabel}` : feedbackLabel }}</button>
       <span v-if="task.commit_mode === 'auto' || task.auto_commit" class="shrink-0 text-green-500" title="Auto-commit after">⇒</span>
       <span v-else-if="task.commit_mode === 'stage'" class="shrink-0 text-blue-400" title="Stage-commit after (Claude stages, you commit)">⇒</span>
       <span v-else-if="task.commit_mode === 'manual'" class="shrink-0 text-orange-400" title="Manual-commit after (you stage and commit)">⇒</span>
@@ -242,11 +246,28 @@
       <span v-if="containerInfo?.machine_hostname && containerInfo?.container_hostname" class="text-slate-700">·</span>
       <span v-if="containerInfo?.container_hostname" class="font-mono">{{ containerInfo.container_hostname }}</span>
       <span v-if="containerInfo" class="text-slate-700">·</span>
-      <span class="font-mono text-slate-400">{{ task.task_type }}: {{ task.filename }} (feedback)</span>
+      <span class="font-mono text-slate-400">{{ task.task_type }}: {{ task.filename }} ({{ feedbackLabel }})</span>
     </div>
     <div v-if="loadingFeedback" class="text-xs text-slate-500">Loading…</div>
-    <MarkdownContent v-else-if="getFeedbackCached(taskKey)" :content="getFeedbackCached(taskKey)!" />
-    <div v-else class="text-xs text-slate-500 italic">No feedback file found yet (plans/{{ derivedFeedbackFilename }}).</div>
+    <template v-else-if="getFeedbackCached(taskKey)">
+      <MarkdownContent v-if="feedbackMainContent" :content="feedbackMainContent" />
+      <div v-if="feedbackCommits.length > 0" class="mt-1.5 pt-1.5 border-t border-indigo-800/40">
+        <div class="text-xs text-slate-500 mb-0.5">Commits</div>
+        <div class="flex flex-col gap-0.5">
+          <button
+            v-for="commit in feedbackCommits"
+            :key="commit.hash"
+            @click="emit('open-git-view', containerInfo?.source_repo ?? '', commit.hash)"
+            class="flex items-center gap-1.5 text-left text-xs font-mono hover:bg-slate-700/40 rounded px-1 py-0.5"
+            :title="`Open commit ${commit.hash} in git view`"
+          >
+            <span class="text-blue-400 shrink-0">{{ commit.hash.slice(0, 7) }}</span>
+            <span class="text-slate-400 truncate">{{ commit.message }}</span>
+          </button>
+        </div>
+      </div>
+    </template>
+    <div v-else class="text-xs text-slate-500 italic">No {{ feedbackLabel }} file found yet (plans/{{ derivedFeedbackFilename }}).</div>
   </div>
   </div>
 
@@ -368,6 +389,7 @@ const props = defineProps<{
   nestLevel?: number
   linkType?: 'follow-up' | 'fix-required' | 'check' | 'other' | null
   dimmed?: boolean
+  highlighted?: boolean
   plansFilesList?: string[]
 }>()
 
@@ -385,6 +407,8 @@ const emit = defineEmits<{
   'set-review-status': [task: PlanqTask, status: ReviewStatus]
   'add-subtask': [task: PlanqTask]
   'open-session': [sessionId: string]
+  'open-git-view': [repo: string, hash: string]
+  'navigate-to-parent': [parentId: number]
   'copy-to-container': [task: PlanqTask]
   'move-to-container': [task: PlanqTask]
 }>()
@@ -487,11 +511,16 @@ const derivedFeedbackFilename = computed(() => {
   if (props.task.task_type === 'investigate') {
     return fn.replace(/^investigate-/, 'feedback-')
   }
-  if (['task', 'plan', 'make-plan'].includes(props.task.task_type)) {
+  if (props.task.task_type === 'make-plan') {
+    return derivedPlanFilename.value
+  }
+  if (['task', 'plan'].includes(props.task.task_type)) {
     return `feedback-${fn}`
   }
   return null
 })
+
+const feedbackLabel = computed(() => props.task.task_type === 'make-plan' ? 'plan' : 'feedback')
 
 const feedbackFileExists = computed(() => {
   const fn = derivedFeedbackFilename.value
@@ -508,6 +537,28 @@ async function toggleFeedbackOpen() {
     loadingFeedback.value = false
   }
 }
+
+// Extract commits section from feedback content
+const COMMITS_MARKER = /\n\n## Commits\n/
+const feedbackMainContent = computed(() => {
+  const content = getFeedbackCached(taskKey.value)
+  if (!content) return content
+  const idx = content.search(COMMITS_MARKER)
+  return idx >= 0 ? content.slice(0, idx) : content
+})
+const feedbackCommits = computed((): Array<{ hash: string; message: string }> => {
+  const content = getFeedbackCached(taskKey.value)
+  if (!content) return []
+  const m = content.match(COMMITS_MARKER)
+  if (!m) return []
+  const section = content.slice(content.indexOf(m[0]) + m[0].length)
+  return section.split('\n')
+    .map(line => {
+      const lm = line.match(/^([0-9a-f]{7,40}) (.+)$/)
+      return lm ? { hash: lm[1], message: lm[2] } : null
+    })
+    .filter(Boolean) as Array<{ hash: string; message: string }>
+})
 
 // ── Review status ─────────────────────────────────────────────────────────────
 

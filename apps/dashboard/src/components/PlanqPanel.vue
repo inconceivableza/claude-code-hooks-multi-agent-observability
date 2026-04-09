@@ -147,8 +147,35 @@
         </template>
       </div>
 
+      <!-- Sort / time filter row -->
+      <div class="flex items-center gap-1 mb-1 flex-wrap text-xs">
+        <span class="text-slate-600 shrink-0">sort:</span>
+        <button
+          v-for="s in SORT_DEFS"
+          :key="s.mode"
+          @click="sortMode = s.mode"
+          class="px-1.5 py-0.5 rounded transition-all"
+          :class="sortMode === s.mode ? 'bg-slate-600 text-slate-200' : 'bg-slate-800 text-slate-500 hover:text-slate-300'"
+          :title="s.label"
+        >{{ s.icon }}</button>
+        <span class="text-slate-700 select-none shrink-0">|</span>
+        <span class="text-slate-600 shrink-0">time:</span>
+        <button
+          v-for="t in TIME_FILTER_DEFS"
+          :key="t.value"
+          @click="timeFilter = timeFilter === t.value ? '' : t.value"
+          class="px-1.5 py-0.5 rounded transition-all"
+          :class="timeFilter === t.value ? 'bg-amber-900/60 text-amber-300' : 'bg-slate-800 text-slate-500 hover:text-slate-300'"
+        >{{ t.label }}</button>
+        <button
+          v-if="timeFilter"
+          @click="timeFilter = ''"
+          class="px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-600"
+        >✕</button>
+      </div>
+
       <!-- Task list: flat DFS-ordered list supporting unlimited nesting levels -->
-      <div v-if="visibleTasksFlat.length > 0">
+      <div v-if="visibleTasksFlat.length > 0" ref="taskListRef">
         <template v-for="item in visibleTasksFlat" :key="item.task.id">
           <PlanqTaskRow
             :task="item.task"
@@ -156,6 +183,7 @@
             :container-id="containerId"
             :all-tasks="tasks"
             :dimmed="item.dimmed"
+            :highlighted="highlightedTaskId === item.task.id"
             :nest-level="item.depth"
             :link-type="item.depth > 0 ? item.task.link_type : undefined"
             :plans-files-list="props.plansFilesList"
@@ -172,6 +200,8 @@
             @dragend="onTaskDragEnd"
             @drop="dropOn(item.task.id)"
             @open-session="sid => emit('open-history', sid)"
+            @open-git-view="(repo, hash) => emit('open-git-view', repo, hash)"
+            @navigate-to-parent="navigateToTask"
             @copy-to-container="t => openMoveDialog(t, 'copy')"
             @move-to-container="t => openMoveDialog(t, 'move')"
           />
@@ -310,7 +340,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, watch, onMounted } from 'vue'
+import { ref, computed, reactive, watch, onMounted, nextTick } from 'vue'
 import { usePlanq } from '../composables/usePlanq'
 import { useContainers } from '../composables/useContainers'
 import { usePlanqPanelState } from '../composables/usePanelState'
@@ -335,6 +365,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'tasks-changed': []
   'open-history': [sessionId: string]
+  'open-git-view': [repo: string, hash: string]
 }>()
 
 const { addTask: apiAdd, updateTask: apiUpdate, deleteTask: apiDelete, reorderTasks: apiReorder, fetchArchive: apiFetchArchive, archiveTask: apiArchiveTask, unarchiveTask: apiUnarchiveTask, archiveDone: apiArchiveDone, respondToAutoTest: apiRespondAutoTest, getSettings: apiGetSettings, updateSettings: apiUpdateSettings } = usePlanq()
@@ -348,6 +379,51 @@ const addingSubtaskTo = ref<PlanqTask | null>(null)
 const editingFile = ref<PlanqTask | null>(null)
 const archiveViewingFile = ref<string | null>(null)
 const dragFrom = ref<number | null>(null)
+
+// Sort mode and time filter
+type SortMode = 'standard' | 'done-asc' | 'done-desc'
+type TimeFilter = '' | '5min' | '15min' | '30min' | '1h' | '2h' | 'today'
+const sortMode = ref<SortMode>('standard')
+const timeFilter = ref<TimeFilter>('')
+const highlightedTaskId = ref<number | null>(null)
+const taskListRef = ref<HTMLElement | null>(null)
+
+const SORT_DEFS: Array<{ mode: SortMode; icon: string; label: string }> = [
+  { mode: 'standard',  icon: '↕ queue',   label: 'Standard queue order' },
+  { mode: 'done-asc',  icon: '↑ time',    label: 'Sort by done time (oldest first)' },
+  { mode: 'done-desc', icon: '↓ time',    label: 'Sort by done time (newest first)' },
+]
+const TIME_FILTER_DEFS: Array<{ value: TimeFilter; label: string }> = [
+  { value: '5min',  label: '5m' },
+  { value: '15min', label: '15m' },
+  { value: '30min', label: '30m' },
+  { value: '1h',    label: '1h' },
+  { value: '2h',    label: '2h' },
+  { value: 'today', label: 'today' },
+]
+
+const timeCutoff = computed((): number | null => {
+  if (!timeFilter.value) return null
+  const now = Date.now()
+  switch (timeFilter.value) {
+    case '5min':  return now - 5 * 60 * 1000
+    case '15min': return now - 15 * 60 * 1000
+    case '30min': return now - 30 * 60 * 1000
+    case '1h':    return now - 60 * 60 * 1000
+    case '2h':    return now - 2 * 60 * 60 * 1000
+    case 'today': { const d = new Date(); d.setHours(0,0,0,0); return d.getTime() }
+    default: return null
+  }
+})
+
+function navigateToTask(taskId: number) {
+  highlightedTaskId.value = taskId
+  nextTick(() => {
+    const el = taskListRef.value?.querySelector(`[data-task-id="${taskId}"]`) as HTMLElement | null
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    setTimeout(() => { if (highlightedTaskId.value === taskId) highlightedTaskId.value = null }, 2000)
+  })
+}
 
 // Move/copy dialog
 const moveDialogTask = ref<PlanqTask | null>(null)
@@ -506,13 +582,14 @@ const sortedTasks = computed(() => {
 })
 
 const hasActiveFilters = computed(() =>
-  activeFilters.size > 0 || activeTypeFilters.size > 0 || activeReviewFilters.size > 0
+  activeFilters.size > 0 || activeTypeFilters.size > 0 || activeReviewFilters.size > 0 || !!timeFilter.value
 )
 
 function taskMatchesFilters(t: PlanqTask): boolean {
   if (activeFilters.size > 0 && !activeFilters.has(t.status)) return false
   if (activeTypeFilters.size > 0 && !activeTypeFilters.has(t.task_type)) return false
   if (activeReviewFilters.size > 0 && !activeReviewFilters.has(t.review_status ?? 'none')) return false
+  if (timeCutoff.value != null && (t.done_at == null || t.done_at < timeCutoff.value)) return false
   return true
 }
 
@@ -540,6 +617,22 @@ const taskPositions = computed(() => {
 
 // Flat DFS-ordered list of all visible tasks (all nesting levels) with depth, position, dimmed.
 const visibleTasksFlat = computed((): { task: PlanqTask; depth: number; position: string; dimmed: boolean }[] => {
+  // When sorted by time, flatten all tasks independently (no tree grouping), sorted by done_at
+  if (sortMode.value !== 'standard') {
+    const all = props.tasks.filter(t => taskMatchesFilters(t))
+    all.sort((a, b) => {
+      const da = a.done_at ?? 0
+      const db = b.done_at ?? 0
+      return sortMode.value === 'done-asc' ? da - db : db - da
+    })
+    return all.map(task => ({
+      task,
+      depth: 0,
+      position: taskPositions.value.get(task.id) ?? '?',
+      dimmed: false,
+    }))
+  }
+
   const result: { task: PlanqTask; depth: number; position: string; dimmed: boolean }[] = []
 
   function visit(task: PlanqTask, depth: number) {

@@ -1797,14 +1797,16 @@ _auto_set_review_ready() {
 }
 
 cmd_mark() {
-    local state="${1:-}" ident="${2:-}"
-    # Support "state:ident" as a single arg (e.g. m d:7)
-    if [ -n "$state" ] && [ -z "$ident" ] && [[ "$state" == *:* ]]; then
-        ident="${state#*:}"
+    local state="${1:-}"
+    shift || true
+    # Support "state:ident" as a single arg (e.g. m d:7 or m:done 7)
+    local _embedded_ident=""
+    if [[ "$state" == *:* ]]; then
+        _embedded_ident="${state#*:}"
         state="${state%%:*}"
     fi
-    if [ -z "$state" ] || [ -z "$ident" ]; then
-        echo "Usage: planq mark <done|d|underway|u|inactive|i|queue|q|awaiting-commit|ac|deferred|df> <N|filename|text>" >&2; return 1
+    if [ -z "$state" ]; then
+        echo "Usage: planq mark <done|d|underway|u|inactive|i|queue|q|awaiting-commit|ac|deferred|df> <N|filename|text> [...]" >&2; return 1
     fi
     case "$state" in
         done|d)                  state=done ;;
@@ -1820,71 +1822,80 @@ cmd_mark() {
         no-commit|+nc)           state=no-commit ;;
         *) echo "Error: state must be done/d, underway/u, inactive/i, queue/q, awaiting-commit/ac, awaiting-plan/ap, deferred/df, auto-commit, stage-commit, manual-commit, or no-commit; got: $state" >&2; return 1 ;;
     esac
-    local next
-    next="$(_find_task_by_identifier "$ident")"
-    if [ -z "$next" ]; then
-        echo "No matching task for '$ident' in $PLANQ_FILE" >&2; return 1
-    fi
-    local line_num task_line
-    line_num="$(printf '%s' "$next" | cut -f1)"
-    task_line="$(printf '%s' "$next" | cut -f2-)"
-    echo "Task: $task_line"
-    # Parse extra options for mark:done (--result and --notes)
+    # Parse remaining args: extract --result/--notes flags, collect identifiers
     local mark_result="" mark_notes=""
-    if [ "$state" = "done" ]; then
-        local remaining_args=()
-        while [ $# -gt 0 ]; do
-            case "$1" in
-                --result) mark_result="${2:-}"; shift 2 || shift ;;
-                --notes)  mark_notes="${2:-}";  shift 2 || shift ;;
-                *) remaining_args+=("$1"); shift ;;
-            esac
-        done
+    local _idents=()
+    [ -n "$_embedded_ident" ] && _idents+=("$_embedded_ident")
+    local _nf=0
+    while [ $# -gt 0 ]; do
+        if [ "$_nf" -eq 1 ]; then mark_result="$1"; _nf=0; shift; continue; fi
+        if [ "$_nf" -eq 2 ]; then mark_notes="$1";  _nf=0; shift; continue; fi
+        case "$1" in
+            --result) _nf=1; shift ;;
+            --notes)  _nf=2; shift ;;
+            *)        _idents+=("$1"); shift ;;
+        esac
+    done
+    if [ ${#_idents[@]} -eq 0 ]; then
+        echo "Usage: planq mark <state> <N|filename|text> [...]" >&2; return 1
     fi
-    # Parse task flags (needed for make-plan add-after/add-end logic below)
-    local task_type task_value task_auto_commit task_stage_commit task_manual_commit task_add_after task_add_end task_auto_queue_plan
-    _parse_task "$task_line"
 
-    case "$state" in
-        done)
-            # Read the raw file line to detect if already done (avoid duplicate plan insertion)
-            local raw_line
-            raw_line="$(sed -n "${line_num}p" "$PLANQ_FILE" 2>/dev/null || echo "")"
-            _mark_done "$line_num" "$task_line"
-            echo "Marked as done."
-            if [ -n "$mark_result" ]; then
-                _write_test_result "$task_line" "$mark_result" "$mark_notes"
-            fi
-            # For make-plan with +add-after or +add-end, insert the plan task
-            if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; } && [[ "$raw_line" != *"[done]"* ]]; then
-                local target_plan="${task_value/#make-plan-/plan-}"
-                local new_plan_task="- plan: ${target_plan}"
-                [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
-                if [ -n "$task_add_after" ]; then
-                    _insert_after_line "$line_num" "$new_plan_task"
-                    echo "make-plan: Added 'plan: ${target_plan}' after current position."
-                else
-                    printf '\n%s\n' "$new_plan_task" >> "$PLANQ_FILE"
-                    echo "make-plan: Added 'plan: ${target_plan}' at end of queue."
+    for _ident in "${_idents[@]}"; do
+        local next
+        next="$(_find_task_by_identifier "$_ident")"
+        if [ -z "$next" ]; then
+            echo "No matching task for '$_ident' in $PLANQ_FILE" >&2
+            continue
+        fi
+        local line_num task_line
+        line_num="$(printf '%s' "$next" | cut -f1)"
+        task_line="$(printf '%s' "$next" | cut -f2-)"
+        echo "Task: $task_line"
+        # Parse task flags (needed for make-plan add-after/add-end logic below)
+        local task_type task_value task_auto_commit task_stage_commit task_manual_commit task_add_after task_add_end task_auto_queue_plan
+        _parse_task "$task_line"
+
+        case "$state" in
+            done)
+                # Read the raw file line to detect if already done (avoid duplicate plan insertion)
+                local raw_line
+                raw_line="$(sed -n "${line_num}p" "$PLANQ_FILE" 2>/dev/null || echo "")"
+                _mark_done "$line_num" "$task_line"
+                echo "Marked as done."
+                if [ -n "$mark_result" ]; then
+                    _write_test_result "$task_line" "$mark_result" "$mark_notes"
                 fi
-            fi
-            _auto_set_review_ready
-            ;;
-        underway)
-            _mark_underway "$line_num" "$task_line"
-            echo "Marked as underway."
-            _auto_set_review_developing
-            ;;
-        inactive)         _mark_inactive        "$line_num" "$task_line"; echo "Marked as inactive (pending)." ;;
-        queue)            _mark_auto_queue      "$line_num" "$task_line"; echo "Marked as auto-queue." ;;
-        awaiting-commit)  _mark_awaiting_commit "$line_num" "$task_line"; echo "Marked as awaiting-commit." ;;
-        awaiting-plan)    _mark_awaiting_plan   "$line_num" "$task_line"; echo "Marked as awaiting-plan." ;;
-        deferred)         _mark_deferred        "$line_num" "$task_line"; echo "Marked as deferred." ;;
-        auto-commit)      _set_commit_flag "$line_num" "auto-commit";  echo "Marked auto-commit." ;;
-        stage-commit)     _set_commit_flag "$line_num" "stage-commit"; echo "Marked stage-commit." ;;
-        manual-commit)    _set_commit_flag "$line_num" "manual-commit"; echo "Marked manual-commit." ;;
-        no-commit)        _set_commit_flag "$line_num" "none";         echo "Cleared commit flag." ;;
-    esac
+                # For make-plan with +add-after or +add-end, insert the plan task
+                if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; } && [[ "$raw_line" != *"[done]"* ]]; then
+                    local target_plan="${task_value/#make-plan-/plan-}"
+                    local new_plan_task="- plan: ${target_plan}"
+                    [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
+                    if [ -n "$task_add_after" ]; then
+                        _insert_after_line "$line_num" "$new_plan_task"
+                        echo "make-plan: Added 'plan: ${target_plan}' after current position."
+                    else
+                        printf '\n%s\n' "$new_plan_task" >> "$PLANQ_FILE"
+                        echo "make-plan: Added 'plan: ${target_plan}' at end of queue."
+                    fi
+                fi
+                _auto_set_review_ready
+                ;;
+            underway)
+                _mark_underway "$line_num" "$task_line"
+                echo "Marked as underway."
+                _auto_set_review_developing
+                ;;
+            inactive)         _mark_inactive        "$line_num" "$task_line"; echo "Marked as inactive (pending)." ;;
+            queue)            _mark_auto_queue      "$line_num" "$task_line"; echo "Marked as auto-queue." ;;
+            awaiting-commit)  _mark_awaiting_commit "$line_num" "$task_line"; echo "Marked as awaiting-commit." ;;
+            awaiting-plan)    _mark_awaiting_plan   "$line_num" "$task_line"; echo "Marked as awaiting-plan." ;;
+            deferred)         _mark_deferred        "$line_num" "$task_line"; echo "Marked as deferred." ;;
+            auto-commit)      _set_commit_flag "$line_num" "auto-commit";  echo "Marked auto-commit." ;;
+            stage-commit)     _set_commit_flag "$line_num" "stage-commit"; echo "Marked stage-commit." ;;
+            manual-commit)    _set_commit_flag "$line_num" "manual-commit"; echo "Marked manual-commit." ;;
+            no-commit)        _set_commit_flag "$line_num" "none";         echo "Cleared commit flag." ;;
+        esac
+    done
     _notify_daemon
 }
 

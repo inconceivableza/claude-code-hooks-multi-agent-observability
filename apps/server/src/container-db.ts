@@ -56,6 +56,7 @@ export interface PlanqTaskRow {
   parent_task_id: number | null;
   link_type: 'follow-up' | 'fix-required' | 'check' | 'other' | null;
   session_ids: string[];
+  done_at: number | null;
 }
 
 export interface PlanqItem {
@@ -295,6 +296,9 @@ export function initContainerDatabase(): void {
   }
   if (!taskColumns.includes('link_type')) {
     db.exec('ALTER TABLE planq_tasks ADD COLUMN link_type TEXT');
+  }
+  if (!taskColumns.includes('done_at')) {
+    db.exec('ALTER TABLE planq_tasks ADD COLUMN done_at INTEGER');
   }
 
   // Migration for git_commits columns added after initial schema
@@ -602,14 +606,15 @@ export function syncPlanqTasksFromParsed(containerId: string, items: PlanqItem[]
   }
 
   const insertStmt = db.prepare(`
-    INSERT INTO planq_tasks (container_id, task_type, filename, description, position, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan, review_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO planq_tasks (container_id, task_type, filename, description, position, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan, review_status, done_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
-    UPDATE planq_tasks SET task_type = ?, filename = ?, description = ?, position = ?, status = ?, auto_commit = ?, commit_mode = ?, plan_disposition = ?, auto_queue_plan = ?, review_status = ?
+    UPDATE planq_tasks SET task_type = ?, filename = ?, description = ?, position = ?, status = ?, auto_commit = ?, commit_mode = ?, plan_disposition = ?, auto_queue_plan = ?, review_status = ?, done_at = ?
     WHERE id = ?
   `);
 
+  const now = Date.now();
   const seenIds = new Set<number>();
   items.forEach((item, i) => {
     const key = item.filename ?? item.description ?? '';
@@ -618,6 +623,9 @@ export function syncPlanqTasksFromParsed(containerId: string, items: PlanqItem[]
 
     const reviewStatus = item.review_status ?? 'none';
     if (existingRow) {
+      // Preserve done_at if already set; set it now when transitioning to done
+      const doneAt = existingRow.done_at
+        ?? (item.status === 'done' ? now : null);
       // Update in place — preserve ID so frontend component state survives
       updateStmt.run(
         item.task_type,
@@ -630,10 +638,12 @@ export function syncPlanqTasksFromParsed(containerId: string, items: PlanqItem[]
         item.plan_disposition ?? 'manual',
         item.auto_queue_plan ? 1 : 0,
         reviewStatus,
+        doneAt,
         existingRow.id,
       );
       seenIds.add(existingRow.id);
     } else {
+      const doneAt = item.status === 'done' ? now : null;
       const result = insertStmt.run(
         containerId,
         item.task_type,
@@ -646,6 +656,7 @@ export function syncPlanqTasksFromParsed(containerId: string, items: PlanqItem[]
         item.plan_disposition ?? 'manual',
         item.auto_queue_plan ? 1 : 0,
         reviewStatus,
+        doneAt,
       );
       seenIds.add(result.lastInsertRowid as number);
     }
@@ -703,6 +714,7 @@ function rowToTask(r: any): PlanqTaskRow {
     review_status: r.review_status ?? 'none',
     parent_task_id: r.parent_task_id ?? null,
     link_type: r.link_type ?? null,
+    done_at: r.done_at ?? null,
     session_ids: [],
   };
 }
@@ -798,7 +810,10 @@ export function updatePlanqTask(
   const fields: string[] = [];
   const values: any[] = [];
   if (updates.description !== undefined) { fields.push('description = ?'); values.push(updates.description); }
-  if (updates.status !== undefined) { fields.push('status = ?'); values.push(updates.status); }
+  if (updates.status !== undefined) {
+    fields.push('status = ?'); values.push(updates.status);
+    if (updates.status === 'done') { fields.push('done_at = COALESCE(done_at, ?)'); values.push(Date.now()); }
+  }
   if (updates.commit_mode !== undefined) {
     fields.push('commit_mode = ?'); values.push(updates.commit_mode);
     fields.push('auto_commit = ?'); values.push(updates.commit_mode === 'auto' ? 1 : 0);
