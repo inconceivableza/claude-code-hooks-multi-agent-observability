@@ -28,8 +28,10 @@
           <option value="make-plan">make-plan — generate a plan file from a prompt</option>
           <option value="investigate">investigate — research a question and write findings</option>
           <option value="auto-test">auto-test — run shell command as automated test</option>
+          <option value="auto-commit">auto-commit — ask Claude to commit current changes</option>
           <option value="agent-test">agent-test — invoke Claude as a testing agent</option>
           <option value="manual-test">manual-test — manual testing step</option>
+          <option value="manual-commit">manual-commit — manual commit step</option>
           <option value="manual-task">manual-task — any manual step</option>
         </select>
       </div>

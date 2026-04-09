@@ -1081,6 +1081,9 @@ cmd_run() {
             make-plan)     echo "[dry-run] Would run: claude \"\$(cat $PLANS_DIR/$task_value) Write the plan to plans/${task_value/#make-plan-/plan-}.\"" ;;
             investigate)   echo "[dry-run] Would run: claude \"\$(cat $PLANS_DIR/$task_value) Write your findings to plans/${task_value/#investigate-/feedback-}.\"" ;;
             unnamed-task)  echo "[dry-run] Would run: claude \"$task_value\"" ;;
+            auto-test)     echo "[dry-run] Would run test command: $task_value" ;;
+            agent-test)    echo "[dry-run] Would run: claude \"$task_value\" (as testing agent)" ;;
+            auto-commit)   echo "[dry-run] Would run: claude auto-commit $task_value" ;;
             manual-*) echo "[dry-run] Would prompt for manual step: $task_value" ;;
             *)        echo "[dry-run] Unknown task type: $task_type" ;;
         esac
@@ -1571,7 +1574,7 @@ cmd_create() {
             *) filename="${filename}.md" ;;
         esac
         case "$task_type" in
-            task|plan|make-plan)
+            task|plan|make-plan|investigate)
                 case "$filename" in
                     ${task_type}-*) ;;  # already prefixed
                     *) filename="${task_type}-${filename}" ;;
@@ -1605,7 +1608,19 @@ cmd_create() {
             printf '%s\n' "$description" > "$PLANS_DIR/${filename}"
             echo "Wrote prompt to: plans/${filename}"
             ;;
-        unnamed-task|manual-test|manual-commit|manual-task|agent-test)
+        investigate)
+            if [ -z "$filename" ]; then
+                echo "Error: --file required for investigate (the prompt filename, e.g. investigate-foo.md)" >&2; return 1
+            fi
+            if [ -z "$description" ]; then
+                echo "Error: description (the prompt / question to investigate) required for investigate" >&2; return 1
+            fi
+            task_line="${task_type}: ${filename}"
+            mkdir -p "$PLANS_DIR"
+            printf '%s\n' "$description" > "$PLANS_DIR/${filename}"
+            echo "Wrote prompt to: plans/${filename}"
+            ;;
+        unnamed-task|manual-test|manual-commit|manual-task|agent-test|auto-test|auto-commit)
             if [ -z "$description" ]; then
                 echo "Error: description required for task type '$task_type'" >&2; return 1
             fi
@@ -2428,7 +2443,7 @@ cmd_follow_up() {
     if [ -n "$filename" ]; then
         case "$filename" in *.md) ;; *) filename="${filename}.md" ;; esac
         case "$task_type" in
-            task|plan|make-plan)
+            task|plan|make-plan|investigate)
                 case "$filename" in
                     ${task_type}-*) ;;
                     *) filename="${task_type}-${filename}" ;;
@@ -2514,17 +2529,20 @@ usage_create() {
     echo "Usage: planq create [-t <type>] [-f <file>] [-p <parent>] [-l <link-type>] [-q] [<desc>]"
     echo "  Add a task to the planq file."
     echo "  -t, --type       Task type (default: unnamed-task)"
-    echo "  -f, --file       Filename in plans/ (required for task/plan/make-plan types)"
+    echo "  -f, --file       Filename in plans/ (required for task/plan/make-plan/investigate types)"
     echo "  -p, --parent     Parent task number or filename — creates a subtask inserted after the parent"
     echo "  -l, --link-type  Link type for subtasks: follow-up (default), fix-required, check, or other"
     echo "  --auto-commit    After task: Claude commits automatically"
     echo "  --stage-commit   After task: Claude stages + drafts message, task pauses for user to commit"
     echo "  --manual-commit  After task: task pauses at awaiting-commit (user stages and commits manually)"
     echo "  -q, --queue      Mark the created task as auto-queued immediately"
-    echo "  Task types: unnamed-task (default), task, plan, make-plan, manual-test, manual-commit, manual-task, agent-test"
+    echo "  Task types: unnamed-task (default), task, plan, make-plan, investigate, auto-test, auto-commit, manual-test, manual-commit, manual-task, agent-test"
     echo ""
     echo "  For make-plan, -f specifies the prompt filename (make-plan-*.md); Claude writes plan-*.md:"
     echo "    planq create -t make-plan -f make-plan-001.md 'Design a caching layer for the API'"
+    echo ""
+    echo "  For investigate, -f specifies the prompt filename (investigate-*.md); Claude writes feedback-*.md:"
+    echo "    planq create -t investigate -f investigate-perf.md 'Why is the API slow under load?'"
     echo ""
     echo "  Subtask examples:"
     echo "    planq create -p 3 'Fix the login bug found during review'   # unnamed follow-up subtask after task #3"
@@ -2597,6 +2615,9 @@ usage() {
     echo "  task                       Read plans/<file> and pass its contents to claude"
     echo "  plan                       Ask claude to read and implement plans/<file>"
     echo "  make-plan                  Use a prompt file (make-plan-*.md) to create a plan file (plan-*.md)"
+    echo "  investigate                Research a question (investigate-*.md) and write findings (feedback-*.md)"
+    echo "  auto-test                  Run a shell command as an automated test"
+    echo "  auto-commit                Ask Claude to commit current changes"
     echo "  manual-(test|commit|task)  Pause for a manual step"
     echo "  agent-test                 Invoke Claude with description as a testing prompt"
     echo ""
@@ -2605,6 +2626,9 @@ usage() {
     echo "  task: <file>"
     echo "  plan: <file>"
     echo "  make-plan: <make-plan-file>  (prompt in plans/make-plan-*.md; Claude writes plans/plan-*.md)"
+    echo "  investigate: <investigate-file>  (prompt in plans/investigate-*.md; findings in plans/feedback-*.md)"
+    echo "  auto-test: <shell command>"
+    echo "  auto-commit: <options>"
     echo "  manual-test: <desc>  (or manual-commit / manual-task)"
     echo "  agent-test: <desc>"
     echo ""

@@ -27,7 +27,7 @@ export type ReviewStatus =
 export interface PlanqTask {
   id: number
   container_id: string
-  task_type: 'task' | 'plan' | 'make-plan' | 'investigate' | 'manual-test' | 'manual-commit' | 'manual-task' | 'unnamed-task' | 'auto-test' | 'auto-commit'
+  task_type: 'task' | 'plan' | 'make-plan' | 'investigate' | 'manual-test' | 'manual-commit' | 'manual-task' | 'unnamed-task' | 'auto-test' | 'auto-commit' | 'agent-test'
   filename: string | null
   description: string | null
   position: number

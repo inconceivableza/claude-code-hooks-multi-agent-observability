@@ -545,7 +545,7 @@ export function parsePlanqOrder(text: string): PlanqItem[] {
       value = value.slice(0, -' +manual-commit'.length);
     }
 
-    if (taskType === 'task' || taskType === 'plan' || taskType === 'make-plan') {
+    if (taskType === 'task' || taskType === 'plan' || taskType === 'make-plan' || taskType === 'investigate') {
       items.push({ task_type: taskType, filename: value, description: null, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan, review_status, depth });
     } else {
       items.push({ task_type: taskType, filename: null, description: value, status, auto_commit, commit_mode, review_status, depth });
