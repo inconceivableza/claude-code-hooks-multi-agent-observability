@@ -1482,11 +1482,12 @@ _random_hex7() {
 }
 
 cmd_create() {
-    local task_type="unnamed-task" task_type_explicit="" filename="" description="" auto_commit="" stage_commit="" manual_commit="" add_after="" add_end="" auto_queue_plan="" parent="" link_type="follow-up" queue_after=""
+    local task_type="unnamed-task" task_type_explicit="" filename="" slug="" description="" auto_commit="" stage_commit="" manual_commit="" add_after="" add_end="" auto_queue_plan="" parent="" link_type="follow-up" queue_after=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --type|-t) task_type="${2:-}"; task_type_explicit="1"; shift 2 ;;
             --file|-f) filename="${2:-}"; shift 2 ;;
+            --slug|-s) slug="${2:-}"; shift 2 ;;
             --parent|-p) parent="${2:-}"; shift 2 ;;
             --link-type|-l) link_type="${2:-}"; shift 2 ;;
             --auto-commit) auto_commit="1"; shift ;;
@@ -1499,6 +1500,15 @@ cmd_create() {
             *) if [ -z "$description" ]; then description="$1"; else description="$description $1"; fi; shift ;;
         esac
     done
+
+    # -s slug: generate filename as $type-$slug.md (type defaults to task)
+    if [ -n "$slug" ] && [ -z "$filename" ]; then
+        local _slug_type="$task_type"
+        [ "$_slug_type" = "unnamed-task" ] && _slug_type="task"
+        filename="${_slug_type}-${slug}.md"
+        # If type wasn't explicitly given, set it based on the generated prefix
+        [ -z "$task_type_explicit" ] && task_type="$_slug_type" && task_type_explicit="1"
+    fi
 
     # planq-order.txt is line-based: newlines in descriptions break parsing.
     # For file-based types (task/plan/make-plan) newlines are fine — they go
@@ -2442,6 +2452,7 @@ cmd_follow_up() {
             --queue|-q) run_mode="queue"; i=$((i+1)) ;;
             --type|-t) task_type="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --file|-f) filename="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
+            --slug|-s) create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --link-type|-l) link_type="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --parent|-p|--auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--auto-queue-plan)
                 create_args+=("${rest_args[$i]}"); i=$((i+1)) ;;
@@ -2513,8 +2524,8 @@ cmd_follow_up() {
 }
 
 usage_follow_up() {
-    echo "Usage: planq follow-up <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-l <link-type>] [<desc>]"
-    echo "       planq fixup    <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-l <link-type>] [<desc>]"
+    echo "Usage: planq follow-up <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-s <slug>] [-l <link-type>] [<desc>]"
+    echo "       planq fixup    <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-s <slug>] [-l <link-type>] [<desc>]"
     echo "  Create a subtask under <parent>."
     echo "  follow-up / fu  default link type: follow-up"
     echo "  fixup     / fx  default link type: fix-required"
@@ -2537,10 +2548,11 @@ usage_follow_up() {
 }
 
 usage_create() {
-    echo "Usage: planq create [-t <type>] [-f <file>] [-p <parent>] [-l <link-type>] [-q] [<desc>]"
+    echo "Usage: planq create [-t <type>] [-f <file>] [-s <slug>] [-p <parent>] [-l <link-type>] [-q] [<desc>]"
     echo "  Add a task to the planq file."
     echo "  -t, --type       Task type (default: unnamed-task)"
     echo "  -f, --file       Filename in plans/ (required for task/plan/make-plan/investigate types)"
+    echo "  -s, --slug       Short slug — generates filename as \$type-\$slug.md (type defaults to task)"
     echo "  -p, --parent     Parent task number or filename — creates a subtask inserted after the parent"
     echo "  -l, --link-type  Link type for subtasks: follow-up (default), fix-required, check, or other"
     echo "  --auto-commit    After task: Claude commits automatically"
