@@ -812,14 +812,11 @@ export function getTimelineEntries(containerId: string, sourceRepo: string, sinc
   const seenDone = new Set<number>();
   for (const r of tasks) {
     const sid = r.session_id ?? '';
-    // Task-start
-    if (!seenStart.has(r.id)) {
+    // Task-start (only when we have a real underway_at timestamp)
+    if (r.underway_at && !seenStart.has(r.id)) {
       seenStart.add(r.id);
-      const startTs = r.underway_at
-        ? r.underway_at * 1000
-        : r.done_at ? r.done_at - 60000 : Date.now();
       entries.push({
-        type: 'task-start', timestamp: startTs, session_id: sid,
+        type: 'task-start', timestamp: r.underway_at * 1000, session_id: sid,
         task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
       });
     }
