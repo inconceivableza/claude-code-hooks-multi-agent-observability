@@ -42,10 +42,14 @@ async function fetchTimeline(containerId: string, sessionIds?: string[]) {
   }
 }
 
+function effectiveSid(e: TimelineEntry): string {
+  return e.session_id || '(no session)'
+}
+
 function rebuildSessionMap(entries: TimelineEntry[]) {
   const map = new Map<string, TimelineEntry[]>()
   for (const e of entries) {
-    const sid = e.session_id || '_unknown'
+    const sid = effectiveSid(e)
     if (!map.has(sid)) map.set(sid, [])
     map.get(sid)!.push(e)
   }
@@ -55,7 +59,7 @@ function rebuildSessionMap(entries: TimelineEntry[]) {
 function addEntry(containerId: string, entry: TimelineEntry) {
   if (containerId !== lastContainerId.value) return
   allEntries.value = [...allEntries.value, entry]
-  const sid = entry.session_id || '_unknown'
+  const sid = effectiveSid(entry)
   const map = new Map(entriesBySession.value)
   if (!map.has(sid)) map.set(sid, [])
   map.set(sid, [...map.get(sid)!, entry])
@@ -68,7 +72,7 @@ const filteredBySession = computed(() => {
   const map = new Map<string, TimelineEntry[]>()
   for (const e of allEntries.value) {
     if (!typeFilters.value.has(e.type as EntryTypeFilter)) continue
-    const sid = e.session_id || '_unknown'
+    const sid = effectiveSid(e)
     if (!map.has(sid)) map.set(sid, [])
     map.get(sid)!.push(e)
   }

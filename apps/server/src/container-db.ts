@@ -792,27 +792,29 @@ export interface TimelineEntry {
 
 export function getTimelineEntries(containerId: string, sourceRepo: string, since: number, sessionIds?: string[]): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
+  // underway_at and linked_at are stored in seconds; since is in ms
+  const sinceSec = Math.floor(since / 1000);
   const sessionFilter = sessionIds?.length
     ? `AND tsl.session_id IN (${sessionIds.map(() => '?').join(',')})`
     : '';
   const sessionParams = sessionIds?.length ? sessionIds : [];
 
-  // Task-start entries (from task_session_links)
+  // Task-start entries (from task_session_links — timestamps in seconds)
   const taskStarts = db.prepare(`
     SELECT tsl.session_id, tsl.underway_at, pt.id, pt.task_type, pt.filename, pt.description, pt.status
     FROM task_session_links tsl
     JOIN planq_tasks pt ON pt.id = tsl.planq_task_id
     WHERE pt.container_id = ? AND tsl.underway_at >= ? ${sessionFilter}
     ORDER BY tsl.underway_at
-  `).all(containerId, since, ...sessionParams) as any[];
+  `).all(containerId, sinceSec, ...sessionParams) as any[];
   for (const r of taskStarts) {
     entries.push({
-      type: 'task-start', timestamp: r.underway_at, session_id: r.session_id,
+      type: 'task-start', timestamp: r.underway_at * 1000, session_id: r.session_id,
       task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
     });
   }
 
-  // Task-done entries
+  // Task-done entries (done_at is in ms)
   const taskDones = db.prepare(`
     SELECT pt.id, pt.task_type, pt.filename, pt.description, pt.status, pt.done_at,
            tsl.session_id
@@ -827,13 +829,15 @@ export function getTimelineEntries(containerId: string, sourceRepo: string, sinc
   for (const r of taskDones) {
     if (seenDone.has(r.id)) continue;
     seenDone.add(r.id);
+    // Pick the first non-null session_id; skip entries with no session at all
+    const sid = r.session_id;
     entries.push({
-      type: 'task-done', timestamp: r.done_at, session_id: r.session_id ?? '',
+      type: 'task-done', timestamp: r.done_at, session_id: sid ?? '',
       task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
     });
   }
 
-  // Commit entries
+  // Commit entries (linked_at is in seconds)
   const commits = db.prepare(`
     SELECT csl.session_id, csl.linked_at, gc.hash, gc.subject
     FROM commit_session_links csl
@@ -841,10 +845,10 @@ export function getTimelineEntries(containerId: string, sourceRepo: string, sinc
     WHERE csl.source_repo = ? AND csl.linked_at >= ?
     ${sessionIds?.length ? `AND csl.session_id IN (${sessionIds.map(() => '?').join(',')})` : ''}
     ORDER BY csl.linked_at
-  `).all(sourceRepo, since, ...sessionParams) as any[];
+  `).all(sourceRepo, sinceSec, ...sessionParams) as any[];
   for (const r of commits) {
     entries.push({
-      type: 'commit', timestamp: r.linked_at, session_id: r.session_id,
+      type: 'commit', timestamp: r.linked_at * 1000, session_id: r.session_id,
       commit: { hash: r.hash, subject: r.subject },
     });
   }

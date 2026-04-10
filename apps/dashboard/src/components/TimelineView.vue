@@ -1,5 +1,5 @@
 <template>
-  <div class="fixed inset-0 z-40 flex flex-col bg-slate-900">
+  <div class="flex flex-col bg-slate-900" style="height: calc(100vh - 56px)">
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-2 border-b border-slate-700 bg-slate-800 shrink-0 gap-2">
       <div class="flex items-center gap-3 min-w-0">
@@ -11,6 +11,7 @@
           @change="onContainerChange"
           class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 font-mono min-w-0 max-w-xs"
         >
+          <option value="">All containers</option>
           <option v-for="c in filteredContainers" :key="c.id" :value="c.id">
             {{ containerOptionLabel(c) }}
           </option>
@@ -320,10 +321,17 @@ function onContainerChange() {
   reload()
 }
 
-function reload() {
-  const c = currentContainer.value
-  const sessionArr = c?.active_session_ids
-  fetchTimeline(selectedContainerId.value, sessionArr)
+async function reload() {
+  if (selectedContainerId.value) {
+    const c = currentContainer.value
+    const sessionArr = c?.active_session_ids
+    await fetchTimeline(selectedContainerId.value, sessionArr)
+  } else {
+    // "All containers" — fetch timeline for first filtered container
+    // (API requires a containerId; for all we'd need to merge)
+    const first = filteredContainers.value[0]
+    if (first) await fetchTimeline(first.id, first.active_session_ids)
+  }
 }
 
 function formatTime(ts: number): string {
@@ -356,6 +364,14 @@ watch(allEntries, async () => {
       el.scrollTop = el.scrollHeight
       isAtBottom[sid] = true
     }
+  }
+})
+
+// If selected container is filtered out, switch to first available
+watch(filteredContainers, (fc) => {
+  if (fc.length && !fc.some(c => c.id === selectedContainerId.value)) {
+    selectedContainerId.value = fc[0].id
+    onContainerChange()
   }
 })
 

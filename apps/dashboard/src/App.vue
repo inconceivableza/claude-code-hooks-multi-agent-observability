@@ -109,9 +109,9 @@
       @open-history="openHistory"
     />
 
-    <!-- Timeline View -->
+    <!-- Timeline View (fills below header) -->
     <TimelineView
-      v-if="timelineContainerId"
+      v-if="timelineContainerId && !showReviewBoard"
       :initial-container-id="timelineContainerId"
       :containers="[...containers.values()]"
       :repo-filter="repoFilter"
