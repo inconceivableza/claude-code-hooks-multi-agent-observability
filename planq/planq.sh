@@ -2486,22 +2486,14 @@ usage_archive() {
 }
 usage_run()    { echo "Usage: planq run [N] [--dry-run|-n]"; echo "  Run the next pending task, or task #N if given, then mark it done."; }
 cmd_follow_up() {
-    # follow-up / fu [taskid] [OPTIONS] [desc]  — create subtask
-    # fixup    / fx [taskid] [OPTIONS] [desc]  — same but with link-type fix-required
+    # follow-up / fu [-p <parent>] [parent] [OPTIONS] [desc]  — create subtask
+    # fixup    / fx [-p <parent>] [parent] [OPTIONS] [desc]  — same but with link-type fix-required
     # Flags: -r/--run (mark underway), -q/--queue (auto-queue), -n/--no-run (just create, default)
+    # Parent can be specified with -p/--parent or as first non-flag positional arg.
     local default_link_type="${1:-follow-up}"
     shift
 
-    local parent="${1:-}"
-    if [ -z "$parent" ]; then
-        echo "Error: parent task ID required (e.g. planq follow-up 3 'Fix the login bug')" >&2
-        return 1
-    fi
-    shift
-
-    # Parse remaining args: extract -r/-n/-q (consumed here) and build create_args
-    # (forwarded to cmd_create without the run-mode flags).
-    local task_type="unnamed-task" filename="" description="" link_type="$default_link_type"
+    local parent="" task_type="unnamed-task" filename="" description="" link_type="$default_link_type"
     local run_mode="no-run"  # default: just create
     local rest_args=("$@")
     local create_args=()
@@ -2511,16 +2503,30 @@ cmd_follow_up() {
             --run|-r)  run_mode="run"; i=$((i+1)) ;;
             --no-run|-n) run_mode="no-run"; i=$((i+1)) ;;
             --queue|-q) run_mode="queue"; i=$((i+1)) ;;
+            --parent|-p) parent="${rest_args[$((i+1))]:-}"; i=$((i+2)) ;;
             --type|-t) task_type="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --file|-f) filename="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --slug|-s) create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --link-type|-l) link_type="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
-            --parent|-p|--auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--auto-queue-plan)
+            --auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--add-subtask|--auto-queue-plan)
                 create_args+=("${rest_args[$i]}"); i=$((i+1)) ;;
-            *) if [ -z "$description" ]; then description="${rest_args[$i]}"; else description="$description ${rest_args[$i]}"; fi
-               create_args+=("${rest_args[$i]}"); i=$((i+1)) ;;
+            --help|-h) usage_followup; return 0 ;;
+            *)
+                # First non-flag positional with no parent yet → interpret as parent
+                if [ -z "$parent" ] && [[ "${rest_args[$i]}" =~ ^[0-9.]+$ || "${rest_args[$i]}" == *.md ]]; then
+                    parent="${rest_args[$i]}"; i=$((i+1))
+                else
+                    if [ -z "$description" ]; then description="${rest_args[$i]}"; else description="$description ${rest_args[$i]}"; fi
+                    create_args+=("${rest_args[$i]}"); i=$((i+1))
+                fi
+                ;;
         esac
     done
+
+    if [ -z "$parent" ]; then
+        echo "Error: parent task required (e.g. planq follow-up 3 'Fix the bug' or planq fu -r -p 3 'Fix')" >&2
+        return 1
+    fi
 
     # Normalize filename like cmd_create does
     if [ -n "$filename" ]; then
@@ -2585,8 +2591,8 @@ cmd_follow_up() {
 }
 
 usage_follow_up() {
-    echo "Usage: planq follow-up <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-s <slug>] [-l <link-type>] [<desc>]"
-    echo "       planq fixup    <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-s <slug>] [-l <link-type>] [<desc>]"
+    echo "Usage: planq follow-up [-p <parent>] [<parent>] [-r|-n|-q] [-t <type>] [-f <file>] [-s <slug>] [-l <link-type>] [<desc>]"
+    echo "       planq fixup    [-p <parent>] [<parent>] [-r|-n|-q] [-t <type>] [-f <file>] [-s <slug>] [-l <link-type>] [<desc>]"
     echo "  Create a subtask under <parent>."
     echo "  follow-up / fu  default link type: follow-up"
     echo "  fixup     / fx  default link type: fix-required"
