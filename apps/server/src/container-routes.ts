@@ -1898,7 +1898,11 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const sessionIds = sessionsParam ? sessionsParam.split(',').filter(Boolean) : undefined;
 
     const entries = getTimelineEntries(containerId, container.source_repo, since, sessionIds);
-    console.log(`[timeline] container=${containerId} repo=${container.source_repo} since=${since} sessions=${sessionIds?.join(',') ?? 'all'} db_entries=${entries.length}`);
+    // Debug: check what source_apps have recent events
+    const recentApps = db.prepare('SELECT DISTINCT source_app FROM events WHERE timestamp >= ? LIMIT 10').all(since) as any[];
+    const evtCount = (db.prepare('SELECT COUNT(*) as c FROM events WHERE source_app = ?').get(container.source_repo) as any)?.c ?? 0;
+    const evtCountNoFilter = (db.prepare('SELECT COUNT(*) as c FROM events WHERE timestamp >= ?').get(since) as any)?.c ?? 0;
+    console.log(`[timeline] container=${containerId} repo=${container.source_repo} since=${since} sessions=${sessionIds?.join(',') ?? 'all'} db_entries=${entries.length} evts_for_repo=${evtCount} evts_total_since=${evtCountNoFilter} recent_apps=${recentApps.map((r: any) => r.source_app).join(',')}`);
 
     // Also fetch progress/prompt entries from events DB (separate database)
     const evtSessionFilter = sessionIds?.length

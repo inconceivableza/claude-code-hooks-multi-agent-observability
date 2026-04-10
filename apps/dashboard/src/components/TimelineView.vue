@@ -322,15 +322,15 @@ function onContainerChange() {
 }
 
 async function reload() {
+  // Don't filter by session IDs — fetch all entries for the source_repo
+  // and let the dashboard group/filter by session client-side.
+  // Passing active_session_ids was too restrictive (offline containers have
+  // stale session IDs that don't match events in the database).
   if (selectedContainerId.value) {
-    const c = currentContainer.value
-    const sessionArr = c?.active_session_ids
-    await fetchTimeline(selectedContainerId.value, sessionArr)
+    await fetchTimeline(selectedContainerId.value)
   } else {
-    // "All containers" — fetch timeline for first filtered container
-    // (API requires a containerId; for all we'd need to merge)
     const first = filteredContainers.value[0]
-    if (first) await fetchTimeline(first.id, first.active_session_ids)
+    if (first) await fetchTimeline(first.id)
   }
 }
 
