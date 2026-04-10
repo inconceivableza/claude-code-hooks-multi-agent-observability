@@ -124,10 +124,21 @@ export interface GitViewData {
   submodules?: Array<{ path: string; source_repo: string }>
 }
 
+export interface TimelineEntry {
+  type: 'task-start' | 'task-done' | 'commit' | 'progress' | 'prompt'
+  timestamp: number
+  session_id: string
+  task?: { id: number; task_type: string; filename: string | null; description: string | null; status: string }
+  commit?: { hash: string; subject: string }
+  summary?: string
+  prompt?: string
+}
+
 export type DashboardMessage =
   | { type: 'initial'; data: ContainerWithState[] }
   | { type: 'container_update'; data: ContainerWithState }
   | { type: 'container_removed'; data: { id: string } }
   | { type: 'planq_update'; data: { container_id: string; tasks: PlanqTask[] } }
   | { type: 'agent_update'; data: { source_repo: string; session_id: string; status: string; last_prompt: string | null; last_response_summary: string | null } }
+  | { type: 'timeline_entry'; data: { container_id: string; entry: TimelineEntry } }
   | { type: 'git_refresh_ready'; source_repo: string }

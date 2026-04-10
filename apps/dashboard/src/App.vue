@@ -60,6 +60,14 @@
             @click="showReviewBoard = !showReviewBoard"
           >Review Board</button>
 
+          <!-- Timeline (needs a container selected) -->
+          <button
+            v-if="firstBusyContainerId"
+            class="text-xs border rounded px-2 py-1 transition-colors"
+            :class="timelineContainerId ? 'text-teal-300 border-teal-500 bg-teal-900/30' : 'text-slate-400 hover:text-slate-200 border-slate-600 hover:border-slate-400'"
+            @click="timelineContainerId = timelineContainerId ? null : firstBusyContainerId"
+          >Timeline</button>
+
           <!-- Link to event stream client -->
           <a
             :href="clientUrl"
@@ -101,8 +109,19 @@
       @open-history="openHistory"
     />
 
+    <!-- Timeline View -->
+    <TimelineView
+      v-if="timelineContainerId"
+      :container-id="timelineContainerId"
+      :container="containers.get(timelineContainerId)"
+      @close="timelineContainerId = null"
+      @open-task="(t) => { /* future: open task sidebar */ }"
+      @open-git="(hash) => openGitView(containers.get(timelineContainerId!)?.source_repo ?? '', hash)"
+      @open-session="openHistoryBySession"
+    />
+
     <!-- Body -->
-    <main v-if="!showReviewBoard" class="px-4 py-4 max-w-7xl mx-auto">
+    <main v-if="!showReviewBoard && !timelineContainerId" class="px-4 py-4 max-w-7xl mx-auto">
       <SystemVersionPanel
         v-show="showVersionPanel"
         :repo-filter="repoFilter"
@@ -140,11 +159,15 @@ import GitViewDialog from './components/GitViewDialog.vue'
 import PromptHistoryDialog from './components/PromptHistoryDialog.vue'
 import SystemVersionPanel from './components/SystemVersionPanel.vue'
 import ReviewBoard from './components/ReviewBoard.vue'
+import TimelineView from './components/TimelineView.vue'
+import { useTimeline } from './composables/useTimeline'
 
 const { byHost, summary, handleMessage, containers } = useContainers()
 const { load: loadAliases } = useHostnameAliases()
+const { addEntry: addTimelineEntry } = useTimeline()
 const showReviewBoard = ref(getParam('review') === '1')
 const showVersionPanel = ref(false)
+const timelineContainerId = ref<string | null>(null)
 const versionsHaveUpdates = ref(false)
 const gitRepo = ref<string | null>(null)
 const gitFocusHash = ref<string | null>(null)
@@ -157,6 +180,10 @@ const gitRefreshSignal = ref(0)
 function handleMessageWithGitRefresh(msg: any) {
   if (msg.type === 'git_refresh_ready') {
     gitRefreshSignal.value++
+    return
+  }
+  if (msg.type === 'timeline_entry') {
+    addTimelineEntry(msg.data.container_id, msg.data.entry)
     return
   }
   handleMessage(msg)
@@ -181,6 +208,16 @@ watch(repoFilter, v => setParam('repo', v))
 watch(hostFilter, v => setParam('host', v))
 watch(connectionFilter, v => setParam('conn', v))
 watch(showReviewBoard, v => setParam('review', v ? '1' : ''))
+
+// First container with activity (for Timeline button)
+const firstBusyContainerId = computed(() => {
+  for (const c of containers.value.values()) {
+    if (c.active_session_ids?.length > 0) return c.id
+  }
+  // Fall back to any container
+  const first = containers.value.values().next()
+  return first.done ? null : first.value?.id ?? null
+})
 
 // Top-level repos only (no submodule paths) — used for the main FilterBar
 const allRepos = computed(() => {

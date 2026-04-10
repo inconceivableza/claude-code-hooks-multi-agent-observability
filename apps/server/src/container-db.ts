@@ -780,6 +780,80 @@ export function getCommitsForSession(sourceRepo: string, sessionId: string): str
   ).all(sourceRepo, sessionId) as any[]).map((r: any) => r.commit_hash);
 }
 
+export interface TimelineEntry {
+  type: 'task-start' | 'task-done' | 'commit' | 'progress' | 'prompt'
+  timestamp: number
+  session_id: string
+  task?: { id: number; task_type: string; filename: string | null; description: string | null; status: string }
+  commit?: { hash: string; subject: string }
+  summary?: string
+  prompt?: string
+}
+
+export function getTimelineEntries(containerId: string, sourceRepo: string, since: number, sessionIds?: string[]): TimelineEntry[] {
+  const entries: TimelineEntry[] = [];
+  const sessionFilter = sessionIds?.length
+    ? `AND tsl.session_id IN (${sessionIds.map(() => '?').join(',')})`
+    : '';
+  const sessionParams = sessionIds?.length ? sessionIds : [];
+
+  // Task-start entries (from task_session_links)
+  const taskStarts = db.prepare(`
+    SELECT tsl.session_id, tsl.underway_at, pt.id, pt.task_type, pt.filename, pt.description, pt.status
+    FROM task_session_links tsl
+    JOIN planq_tasks pt ON pt.id = tsl.planq_task_id
+    WHERE pt.container_id = ? AND tsl.underway_at >= ? ${sessionFilter}
+    ORDER BY tsl.underway_at
+  `).all(containerId, since, ...sessionParams) as any[];
+  for (const r of taskStarts) {
+    entries.push({
+      type: 'task-start', timestamp: r.underway_at, session_id: r.session_id,
+      task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
+    });
+  }
+
+  // Task-done entries
+  const taskDones = db.prepare(`
+    SELECT pt.id, pt.task_type, pt.filename, pt.description, pt.status, pt.done_at,
+           tsl.session_id
+    FROM planq_tasks pt
+    LEFT JOIN task_session_links tsl ON tsl.planq_task_id = pt.id
+    WHERE pt.container_id = ? AND pt.done_at IS NOT NULL AND pt.done_at >= ?
+    ${sessionIds?.length ? `AND (tsl.session_id IN (${sessionIds.map(() => '?').join(',')}) OR tsl.session_id IS NULL)` : ''}
+    ORDER BY pt.done_at
+  `).all(containerId, since, ...sessionParams) as any[];
+  // Deduplicate: a task done by multiple sessions should appear once
+  const seenDone = new Set<number>();
+  for (const r of taskDones) {
+    if (seenDone.has(r.id)) continue;
+    seenDone.add(r.id);
+    entries.push({
+      type: 'task-done', timestamp: r.done_at, session_id: r.session_id ?? '',
+      task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
+    });
+  }
+
+  // Commit entries
+  const commits = db.prepare(`
+    SELECT csl.session_id, csl.linked_at, gc.hash, gc.subject
+    FROM commit_session_links csl
+    JOIN git_commits gc ON gc.source_repo = csl.source_repo AND gc.hash = csl.commit_hash
+    WHERE csl.source_repo = ? AND csl.linked_at >= ?
+    ${sessionIds?.length ? `AND csl.session_id IN (${sessionIds.map(() => '?').join(',')})` : ''}
+    ORDER BY csl.linked_at
+  `).all(sourceRepo, since, ...sessionParams) as any[];
+  for (const r of commits) {
+    entries.push({
+      type: 'commit', timestamp: r.linked_at, session_id: r.session_id,
+      commit: { hash: r.hash, subject: r.subject },
+    });
+  }
+
+  // Sort all entries by timestamp, cap at 500
+  entries.sort((a, b) => a.timestamp - b.timestamp);
+  return entries.slice(-500);
+}
+
 export function addPlanqTask(
   containerId: string,
   taskType: string,
