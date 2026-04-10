@@ -1,5 +1,5 @@
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="emit('close')" @keydown="onConfirmKey($event, submit)" @keydown.escape="emit('close')">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @keydown="onConfirmKey($event, submit)" @keydown.escape="closeDialog">
     <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-5 min-w-[32rem] flex flex-col gap-4 max-h-[90vh] overflow-y-auto" data-bwignore data-1p-ignore data-lpignore="true">
       <div class="flex items-center justify-between">
         <div>
@@ -8,13 +8,20 @@
             Adding subtask to: <span class="font-mono text-slate-300">{{ props.parentTask.filename ?? props.parentTask.description }}</span>
           </div>
         </div>
-        <button @click="emit('close')" class="text-slate-500 hover:text-slate-300 text-sm">✕</button>
+        <button @click="closeDialog" class="text-slate-500 hover:text-slate-300 text-sm">✕</button>
       </div>
 
       <!-- Offline warning -->
       <div v-if="offlineWarning" class="flex items-start gap-2 bg-amber-900/30 border border-amber-700/60 rounded px-3 py-2 text-xs text-amber-300">
         <span class="shrink-0 mt-0.5">⚠️</span>
         <span>{{ offlineWarning }}</span>
+      </div>
+
+      <!-- Resume banner -->
+      <div v-if="showResumeBanner" class="flex items-center gap-2 bg-indigo-900/30 border border-indigo-700/60 rounded px-3 py-2 text-xs text-indigo-300">
+        <span>Previous unsaved form data found.</span>
+        <button @click="restoreSaved" class="text-indigo-200 hover:text-white underline">Resume</button>
+        <button @click="dismissResume" class="text-indigo-500 hover:text-indigo-300">Dismiss</button>
       </div>
 
       <div class="flex flex-col gap-1">
@@ -378,7 +385,7 @@
 
       <div class="flex justify-end gap-2">
         <button
-          @click="emit('close')"
+          @click="closeDialog"
           class="text-xs px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300"
         >Cancel</button>
         <button
@@ -392,7 +399,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+
+// Module-level: survives component unmount, keyed by containerId
+const savedFormData = new Map<string, Record<string, any>>()
 import { usePlanq } from '../composables/usePlanq'
 import { useConfirmKey } from '../composables/useConfirmKey'
 import { useContainers } from '../composables/useContainers'
@@ -444,6 +454,63 @@ const planDisposition = ref<'manual' | 'add-after' | 'add-end' | 'add-subtask'>(
 const autoQueuePlan = ref(false)
 const autoQueue = ref(false)
 const linkType = ref<'follow-up' | 'fix-required' | 'check' | 'other'>('follow-up')
+
+const showResumeBanner = ref(false)
+
+// Check for saved data on mount
+onMounted(() => {
+  const saved = savedFormData.get(props.containerId)
+  if (saved && (saved.description || saved.taskSlug || saved.planSlug || saved.makePlanSlug || saved.investigateSlug)) {
+    showResumeBanner.value = true
+  }
+})
+
+function saveFormState() {
+  const hasContent = description.value.trim() || taskSlug.value || planSlug.value || makePlanSlug.value || investigateSlug.value
+  if (hasContent) {
+    savedFormData.set(props.containerId, {
+      taskType: taskType.value,
+      taskSlug: taskSlug.value,
+      planSlug: planSlug.value,
+      makePlanSlug: makePlanSlug.value,
+      investigateSlug: investigateSlug.value,
+      description: description.value,
+      commitMode: commitMode.value,
+      planDisposition: planDisposition.value,
+      autoQueuePlan: autoQueuePlan.value,
+      autoQueue: autoQueue.value,
+    })
+  } else {
+    savedFormData.delete(props.containerId)
+  }
+}
+
+function restoreSaved() {
+  const saved = savedFormData.get(props.containerId)
+  if (!saved) return
+  taskType.value = saved.taskType ?? 'task'
+  taskSlug.value = saved.taskSlug ?? ''
+  planSlug.value = saved.planSlug ?? ''
+  makePlanSlug.value = saved.makePlanSlug ?? ''
+  investigateSlug.value = saved.investigateSlug ?? ''
+  description.value = saved.description ?? ''
+  commitMode.value = saved.commitMode ?? 'none'
+  planDisposition.value = saved.planDisposition ?? 'manual'
+  autoQueuePlan.value = saved.autoQueuePlan ?? false
+  autoQueue.value = saved.autoQueue ?? false
+  showResumeBanner.value = false
+  savedFormData.delete(props.containerId)
+}
+
+function dismissResume() {
+  showResumeBanner.value = false
+  savedFormData.delete(props.containerId)
+}
+
+function closeDialog() {
+  saveFormState()
+  emit('close')
+}
 
 const pendingSubtasks = ref<SubtaskEntry[]>([])
 
@@ -687,6 +754,7 @@ function submit() {
   } else {
     emit('add', taskType.value, null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs, aq)
   }
+  savedFormData.delete(props.containerId)
   emit('close')
 }
 </script>
