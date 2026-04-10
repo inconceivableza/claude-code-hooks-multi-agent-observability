@@ -1847,7 +1847,7 @@ cmd_mark() {
         done|d)                  state=done ;;
         underway|u)              state=underway ;;
         inactive|i)              state=inactive ;;
-        queue|q)                 state=queue ;;
+        queue|q|auto-queue|aq)   state=queue ;;
         awaiting-commit|ac)      state=awaiting-commit ;;
         awaiting-plan|ap)        state=awaiting-plan ;;
         deferred|df)             state=deferred ;;
@@ -2650,7 +2650,7 @@ usage_mark()   {
     echo "  done/d              mark task done"
     echo "  underway/u          mark task in-progress"
     echo "  inactive/i          restore done/underway/auto-queue/awaiting-commit task to pending"
-    echo "  queue/q             mark for automatic execution by 'planq auto'"
+    echo "  queue/q/auto-queue/aq  mark for automatic execution by 'planq auto'"
     echo "  awaiting-commit/ac  mark as waiting for user to commit staged changes"
     echo "  awaiting-plan/ap    mark make-plan task as waiting for plan review"
     echo "  deferred/df         move task to the bottom of the list (skip for now)"
