@@ -1,6 +1,6 @@
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="emit('close')" @keydown="onConfirmKey($event, submit)" @keydown.escape="emit('close')">
-    <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-5 min-w-[32rem] flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
+    <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-5 min-w-[32rem] flex flex-col gap-4 max-h-[90vh] overflow-y-auto" data-bwignore data-1p-ignore data-lpignore="true">
       <div class="flex items-center justify-between">
         <div>
           <h3 class="text-sm font-semibold text-slate-200">{{ props.parentTask ? 'Add Subtask' : 'Add Task' }}</h3>
