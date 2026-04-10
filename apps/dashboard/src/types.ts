@@ -34,7 +34,7 @@ export interface PlanqTask {
   status: 'pending' | 'done' | 'underway' | 'auto-queue' | 'awaiting-commit' | 'awaiting-plan' | 'deferred'
   auto_commit: boolean
   commit_mode: 'none' | 'auto' | 'stage' | 'manual'
-  plan_disposition: 'manual' | 'add-after' | 'add-end'
+  plan_disposition: 'manual' | 'add-after' | 'add-end' | 'add-subtask'
   auto_queue_plan: boolean
   review_status: ReviewStatus
   parent_task_id: number | null

@@ -2072,7 +2072,7 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     }
 
     const effectiveMode = (['auto', 'stage', 'manual'].includes(commit_mode) ? commit_mode : (auto_commit ? 'auto' : 'none')) as 'none' | 'auto' | 'stage' | 'manual';
-    const effectiveDisposition = (['add-after', 'add-end'].includes(plan_disposition) ? plan_disposition : 'manual') as 'manual' | 'add-after' | 'add-end';
+    const effectiveDisposition = (['add-after', 'add-end', 'add-subtask'].includes(plan_disposition) ? plan_disposition : 'manual') as 'manual' | 'add-after' | 'add-end' | 'add-subtask';
     const task = addPlanqTask(containerId, task_type, filename ?? null, description ?? null, effectiveMode === 'auto', effectiveMode, effectiveDisposition, Boolean(auto_queue_plan), auto_queue ? 'auto-queue' : 'pending');
     touchPlanqServerModified(containerId);
     // For make-plan, write the prompt to the filename directly (filename IS make-plan-*.md)

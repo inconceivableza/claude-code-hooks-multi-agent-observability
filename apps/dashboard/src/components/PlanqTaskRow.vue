@@ -64,6 +64,7 @@
       <template v-if="task.task_type === 'make-plan'">
         <span v-if="task.plan_disposition === 'add-after'" class="shrink-0 text-teal-400" :title="task.auto_queue_plan ? 'Plan will be added after this task (auto-queued)' : 'Plan will be added after this task'">📋⇒{{ task.auto_queue_plan ? '⏱' : '' }}</span>
         <span v-else-if="task.plan_disposition === 'add-end'" class="shrink-0 text-cyan-400" :title="task.auto_queue_plan ? 'Plan will be added to end of queue (auto-queued)' : 'Plan will be added to end of queue'">📋↓{{ task.auto_queue_plan ? '⏱' : '' }}</span>
+        <span v-else-if="task.plan_disposition === 'add-subtask'" class="shrink-0 text-purple-400" :title="task.auto_queue_plan ? 'Plan will be added as subtask (auto-queued)' : 'Plan will be added as subtask'">📋↳{{ task.auto_queue_plan ? '⏱' : '' }}</span>
       </template>
       <!-- Session link badge — visible when task has associated sessions -->
       <button

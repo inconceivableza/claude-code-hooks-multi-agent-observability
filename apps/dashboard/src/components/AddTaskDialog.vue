@@ -410,7 +410,7 @@ export interface SubtaskEntry {
 
 const emit = defineEmits<{
   close: []
-  add: [taskType: string, filename: string | null, description: string | null, createFile: boolean, commitMode: 'none' | 'auto' | 'stage' | 'manual' | undefined, planDisposition?: 'manual' | 'add-after' | 'add-end', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[], autoQueue?: boolean]
+  add: [taskType: string, filename: string | null, description: string | null, createFile: boolean, commitMode: 'none' | 'auto' | 'stage' | 'manual' | undefined, planDisposition?: 'manual' | 'add-after' | 'add-end' | 'add-subtask', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[], autoQueue?: boolean]
 }>()
 
 const { readFile, listPlansFiles, getSettings } = usePlanq()
@@ -440,7 +440,7 @@ const makePlanSlug = ref('')
 const investigateSlug = ref('')
 const description = ref('')
 const commitMode = ref<'none' | 'auto' | 'stage' | 'manual'>('none')
-const planDisposition = ref<'manual' | 'add-after' | 'add-end'>('manual')
+const planDisposition = ref<'manual' | 'add-after' | 'add-end' | 'add-subtask'>('manual')
 const autoQueuePlan = ref(false)
 const autoQueue = ref(false)
 const linkType = ref<'follow-up' | 'fix-required' | 'check' | 'other'>('follow-up')
@@ -475,6 +475,7 @@ const planDispositionOptions = [
   { value: 'manual' as const, label: 'Manual review', activeClass: 'border-slate-500 bg-slate-600 text-slate-200' },
   { value: 'add-after' as const, label: '⇒ Add after current', activeClass: 'border-teal-600 bg-teal-900/50 text-teal-300' },
   { value: 'add-end' as const, label: '⇒ Add to end', activeClass: 'border-cyan-600 bg-cyan-900/50 text-cyan-300' },
+  { value: 'add-subtask' as const, label: '↳ Add as subtask', activeClass: 'border-purple-600 bg-purple-900/50 text-purple-300' },
 ]
 
 const plansFiles = ref<string[]>([])

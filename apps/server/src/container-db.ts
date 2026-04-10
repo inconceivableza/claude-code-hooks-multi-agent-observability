@@ -50,7 +50,7 @@ export interface PlanqTaskRow {
   status: string;
   auto_commit: boolean;
   commit_mode: 'none' | 'auto' | 'stage' | 'manual';
-  plan_disposition: 'manual' | 'add-after' | 'add-end';
+  plan_disposition: 'manual' | 'add-after' | 'add-end' | 'add-subtask';
   auto_queue_plan: boolean;
   review_status: string;
   parent_task_id: number | null;
@@ -865,7 +865,7 @@ export function addPlanqTask(
   description: string | null,
   autoCommit = false,
   commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none',
-  planDisposition: 'manual' | 'add-after' | 'add-end' = 'manual',
+  planDisposition: 'manual' | 'add-after' | 'add-end' | 'add-subtask' = 'manual',
   autoQueuePlan = false,
   initialStatus: 'pending' | 'auto-queue' = 'pending'
 ): PlanqTaskRow {

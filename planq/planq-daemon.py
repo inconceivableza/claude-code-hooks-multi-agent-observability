@@ -1151,7 +1151,7 @@ def _task_key_from_line(line: str) -> str | None:
         if value.endswith(f' +{rs}'):
             value = value[:-len(f' +{rs}')]
             break
-    for flag in (' +auto-queue-plan', ' +add-after', ' +add-end',
+    for flag in (' +auto-queue-plan', ' +add-after', ' +add-end', ' +add-subtask',
                  ' +auto-commit', ' +stage-commit', ' +manual-commit'):
         if value.endswith(flag):
             value = value[:-len(flag)]
@@ -1346,6 +1346,8 @@ def _apply_add_task(payload: dict) -> None:
             value += ' +add-after'
         elif plan_disposition == 'add-end':
             value += ' +add-end'
+        elif plan_disposition == 'add-subtask':
+            value += ' +add-subtask'
         if auto_queue_plan:
             value += ' +auto-queue-plan'
     if commit_mode == 'auto':

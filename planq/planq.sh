@@ -759,6 +759,7 @@ _parse_task() {
     task_manual_commit=""
     task_add_after=""
     task_add_end=""
+    task_add_subtask=""
     task_auto_queue_plan=""
     if [[ "$task_value" == *" +auto-commit" ]]; then
         task_auto_commit="1"
@@ -783,6 +784,10 @@ _parse_task() {
     if [[ "$task_value" == *" +add-end" ]]; then
         task_add_end="1"
         task_value="${task_value% +add-end}"
+    fi
+    if [[ "$task_value" == *" +add-subtask" ]]; then
+        task_add_subtask="1"
+        task_value="${task_value% +add-subtask}"
     fi
 }
 
@@ -983,7 +988,9 @@ _show_task_details() {
     [ -n "$task_stage_commit" ] && printf "  Stage-commit after: yes\n"
     [ -n "$task_manual_commit" ] && printf "  Manual-commit after: yes\n"
     if [ "$task_type" = "make-plan" ]; then
-        if [ -n "$task_add_after" ]; then
+        if [ -n "$task_add_subtask" ]; then
+            printf "  Plan disposition: add-subtask%s\n" "${task_auto_queue_plan:+ (auto-queue)}"
+        elif [ -n "$task_add_after" ]; then
             printf "  Plan disposition: add-after%s\n" "${task_auto_queue_plan:+ (auto-queue)}"
         elif [ -n "$task_add_end" ]; then
             printf "  Plan disposition: add-end%s\n" "${task_auto_queue_plan:+ (auto-queue)}"
@@ -1122,12 +1129,24 @@ cmd_run() {
             prompt="$(cat "$prompt_file")"
             target_plan="${task_value/#make-plan-/plan-}"
             claude "${prompt} Write the plan to plans/${target_plan}. REQUIRED FINAL STEP: Write a brief summary of the plan you created to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
-            if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
+            if [ -n "$task_add_after" ] || [ -n "$task_add_end" ] || [ -n "$task_add_subtask" ]; then
                 _mark_done "$line_num" "$task_line"
                 # After marking done the line number is now a done line; insert/append the plan
                 local new_plan_task="- plan: ${target_plan}"
                 [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
-                if [ -n "$task_add_after" ]; then
+                if [ -n "$task_add_subtask" ]; then
+                    # Add as subtask (indented under the make-plan task)
+                    local _raw_line
+                    _raw_line="$(sed -n "${line_num}p" "$PLANQ_FILE" 2>/dev/null || echo "")"
+                    local _depth=0
+                    local _indent="${_raw_line%%[! ]*}"
+                    _depth=$(( ${#_indent} / 2 ))
+                    local _child_indent
+                    _child_indent="$(printf '%*s' $(( (_depth + 1) * 2 )) '')"
+                    new_plan_task="${_child_indent}${new_plan_task}"
+                    _insert_after_line "$line_num" "$new_plan_task"
+                    echo "make-plan: Added 'plan: ${target_plan}' as subtask."
+                elif [ -n "$task_add_after" ]; then
                     _insert_after_line "$line_num" "$new_plan_task"
                     echo "make-plan: Added 'plan: ${target_plan}' after current position."
                 else
@@ -1881,15 +1900,32 @@ cmd_mark() {
                 if [ -n "$mark_result" ]; then
                     _write_test_result "$task_line" "$mark_result" "$mark_notes"
                 fi
-                # For make-plan with +add-after or +add-end, insert the plan task
-                if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; } && [[ "$raw_line" != *"[done]"* ]]; then
+                # For make-plan with +add-after, +add-end, or +add-subtask, insert the plan task
+                if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ] || [ -n "$task_add_subtask" ]; } && [[ "$raw_line" != *"[done]"* ]]; then
                     local target_plan="${task_value/#make-plan-/plan-}"
-                    local new_plan_task="- plan: ${target_plan}"
-                    [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
-                    if [ -n "$task_add_after" ]; then
+                    local new_plan_task
+                    if [ -n "$task_add_subtask" ]; then
+                        # Add as a subtask (indented under the make-plan task)
+                        local _parent_depth=0
+                        local _parsed
+                        _parsed="$(_v2_parse_line "$raw_line" 2>/dev/null)" || true
+                        if [ -n "$_parsed" ]; then
+                            _parent_depth=$(( ${#_parsed%%	*} / 2 ))
+                        fi
+                        local _child_indent
+                        _child_indent="$(printf '%*s' $(( (_parent_depth + 1) * 2 )) '')"
+                        new_plan_task="${_child_indent}- plan: ${target_plan}"
+                        [ -n "$task_auto_queue_plan" ] && new_plan_task="${_child_indent}- [auto-queue] plan: ${target_plan}"
+                        _insert_after_line "$line_num" "$new_plan_task"
+                        echo "make-plan: Added 'plan: ${target_plan}' as subtask."
+                    elif [ -n "$task_add_after" ]; then
+                        new_plan_task="- plan: ${target_plan}"
+                        [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
                         _insert_after_line "$line_num" "$new_plan_task"
                         echo "make-plan: Added 'plan: ${target_plan}' after current position."
                     else
+                        new_plan_task="- plan: ${target_plan}"
+                        [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
                         printf '\n%s\n' "$new_plan_task" >> "$PLANQ_FILE"
                         echo "make-plan: Added 'plan: ${target_plan}' at end of queue."
                     fi
@@ -1952,11 +1988,21 @@ _run_task_inline() {
             prompt="$(cat "$prompt_file")"
             target_plan="${task_value/#make-plan-/plan-}"
             _invoke_claude "${prompt} Write the plan to plans/${target_plan}. REQUIRED FINAL STEP: Write a brief summary of the plan you created to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
-            if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
+            if [ -n "$task_add_after" ] || [ -n "$task_add_end" ] || [ -n "$task_add_subtask" ]; then
                 _mark_done "$line_num" "$task_line"
                 local new_plan_task="- plan: ${target_plan}"
                 [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
-                if [ -n "$task_add_after" ]; then
+                if [ -n "$task_add_subtask" ]; then
+                    local _raw_line
+                    _raw_line="$(sed -n "${line_num}p" "$PLANQ_FILE" 2>/dev/null || echo "")"
+                    local _depth=0 _indent="${_raw_line%%[! ]*}"
+                    _depth=$(( ${#_indent} / 2 ))
+                    local _child_indent
+                    _child_indent="$(printf '%*s' $(( (_depth + 1) * 2 )) '')"
+                    new_plan_task="${_child_indent}${new_plan_task}"
+                    _insert_after_line "$line_num" "$new_plan_task"
+                    echo "make-plan: Added 'plan: ${target_plan}' as subtask."
+                elif [ -n "$task_add_after" ]; then
                     _insert_after_line "$line_num" "$new_plan_task"
                     echo "make-plan: Added 'plan: ${target_plan}' after current position."
                 else
