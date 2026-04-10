@@ -1898,6 +1898,7 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     const sessionIds = sessionsParam ? sessionsParam.split(',').filter(Boolean) : undefined;
 
     const entries = getTimelineEntries(containerId, container.source_repo, since, sessionIds);
+    console.log(`[timeline] container=${containerId} repo=${container.source_repo} since=${since} sessions=${sessionIds?.join(',') ?? 'all'} db_entries=${entries.length}`);
 
     // Also fetch progress/prompt entries from events DB (separate database)
     const evtSessionFilter = sessionIds?.length
@@ -1925,6 +1926,10 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
         }
       }
     }
+
+    const byType = new Map<string, number>();
+    for (const e of entries) byType.set(e.type, (byType.get(e.type) ?? 0) + 1);
+    console.log(`[timeline] total=${entries.length} breakdown: ${[...byType].map(([k,v]) => `${k}=${v}`).join(' ')} evtRows=${evtRows.length}`);
 
     entries.sort((a, b) => a.timestamp - b.timestamp);
     return json(entries.slice(-500));

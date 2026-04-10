@@ -807,6 +807,10 @@ export function getTimelineEntries(containerId: string, sourceRepo: string, sinc
     WHERE pt.container_id = ? AND tsl.underway_at >= ? ${sessionFilter}
     ORDER BY tsl.underway_at
   `).all(containerId, sinceSec, ...sessionParams) as any[];
+  // Debug: also check how many exist without the since filter
+  const totalLinks = (db.prepare('SELECT COUNT(*) as c FROM task_session_links tsl JOIN planq_tasks pt ON pt.id = tsl.planq_task_id WHERE pt.container_id = ?').get(containerId) as any)?.c ?? 0;
+  const totalCommitLinks = (db.prepare('SELECT COUNT(*) as c FROM commit_session_links WHERE source_repo = ?').get(sourceRepo) as any)?.c ?? 0;
+  console.log(`[timeline-db] container=${containerId} sinceSec=${sinceSec} sessionIds=${sessionIds?.join(',') ?? 'none'} taskLinks_total=${totalLinks} taskStarts_filtered=${taskStarts.length} commitLinks_total=${totalCommitLinks}`);
   for (const r of taskStarts) {
     entries.push({
       type: 'task-start', timestamp: r.underway_at * 1000, session_id: r.session_id,
