@@ -115,7 +115,7 @@
       :container-id="timelineContainerId"
       :container="containers.get(timelineContainerId)"
       @close="timelineContainerId = null"
-      @open-task="(t) => { /* future: open task sidebar */ }"
+      @open-task="(_t) => { /* future: open task sidebar */ }"
       @open-git="(hash) => openGitView(containers.get(timelineContainerId!)?.source_repo ?? '', hash)"
       @open-session="openHistoryBySession"
     />
