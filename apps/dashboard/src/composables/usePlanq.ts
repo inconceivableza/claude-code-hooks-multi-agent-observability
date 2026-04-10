@@ -9,7 +9,7 @@ export function usePlanq() {
     description: string | null,
     createFile = false,
     commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none',
-    planDisposition?: 'manual' | 'add-after' | 'add-end',
+    planDisposition?: 'manual' | 'add-after' | 'add-end' | 'add-subtask',
     autoQueuePlan?: boolean,
     parentTaskId?: number,
     linkType?: 'follow-up' | 'fix-required' | 'check' | 'other',
