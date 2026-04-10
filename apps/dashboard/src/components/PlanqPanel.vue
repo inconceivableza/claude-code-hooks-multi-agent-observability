@@ -301,7 +301,7 @@
       :container-id="containerId"
       :all-tasks="tasks"
       @close="showAddDialog = false"
-      @add="(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks) => addTask(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks)"
+      @add="(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks, autoQueue) => addTask(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks, autoQueue)"
     />
     <AddTaskDialog
       v-if="addingSubtaskTo"
@@ -309,7 +309,7 @@
       :all-tasks="tasks"
       :parent-task="addingSubtaskTo"
       @close="addingSubtaskTo = null"
-      @add="(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType) => addTask(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType)"
+      @add="(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks, autoQueue) => addTask(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks, autoQueue)"
     />
 
     <PlanqFileEditor
@@ -773,9 +773,9 @@ function archiveBadgeClass(taskType: string): string {
 
 const cid = () => props.containerId
 
-async function addTask(taskType: string, filename: string | null, description: string | null, createFile = false, commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none', planDisposition?: 'manual' | 'add-after' | 'add-end', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[]) {
-  console.log(`[planq] add task type=${taskType} file=${filename ?? '—'} commit_mode=${commitMode} container=${cid()}`)
-  const created = await apiAdd(props.containerId, taskType, filename, description, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType)
+async function addTask(taskType: string, filename: string | null, description: string | null, createFile = false, commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none', planDisposition?: 'manual' | 'add-after' | 'add-end', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[], autoQueue?: boolean) {
+  console.log(`[planq] add task type=${taskType} file=${filename ?? '—'} commit_mode=${commitMode} auto_queue=${!!autoQueue} container=${cid()}`)
+  const created = await apiAdd(props.containerId, taskType, filename, description, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, autoQueue)
   if (created && subtasks?.length) {
     for (const sub of subtasks) {
       const subFile = sub.filename.trim() || null

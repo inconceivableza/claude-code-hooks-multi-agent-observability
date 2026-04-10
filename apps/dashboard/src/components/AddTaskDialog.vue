@@ -311,6 +311,17 @@
         </div>
       </div>
 
+      <!-- Auto-queue toggle -->
+      <div class="flex items-center gap-2">
+        <input
+          id="auto-queue-task"
+          v-model="autoQueue"
+          type="checkbox"
+          class="rounded"
+        />
+        <label for="auto-queue-task" class="text-xs text-slate-400">⏱ Auto-queue <span class="text-slate-500">(mark for auto-run by agent)</span></label>
+      </div>
+
       <!-- Subtasks (only when not already adding a subtask and task is file-based) -->
       <div v-if="!props.parentTask && isFileBasedTask" class="flex flex-col gap-1.5">
         <div class="flex items-center justify-between">
@@ -399,7 +410,7 @@ export interface SubtaskEntry {
 
 const emit = defineEmits<{
   close: []
-  add: [taskType: string, filename: string | null, description: string | null, createFile: boolean, commitMode: 'none' | 'auto' | 'stage' | 'manual' | undefined, planDisposition?: 'manual' | 'add-after' | 'add-end', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[]]
+  add: [taskType: string, filename: string | null, description: string | null, createFile: boolean, commitMode: 'none' | 'auto' | 'stage' | 'manual' | undefined, planDisposition?: 'manual' | 'add-after' | 'add-end', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[], autoQueue?: boolean]
 }>()
 
 const { readFile, listPlansFiles, getSettings } = usePlanq()
@@ -431,6 +442,7 @@ const description = ref('')
 const commitMode = ref<'none' | 'auto' | 'stage' | 'manual'>('none')
 const planDisposition = ref<'manual' | 'add-after' | 'add-end'>('manual')
 const autoQueuePlan = ref(false)
+const autoQueue = ref(false)
 const linkType = ref<'follow-up' | 'fix-required' | 'check' | 'other'>('follow-up')
 
 const pendingSubtasks = ref<SubtaskEntry[]>([])
@@ -648,30 +660,31 @@ function submit() {
   const parentTaskId = props.parentTask?.id
   const lt = props.parentTask ? linkType.value : undefined
   const subs = pendingSubtasks.value.length > 0 ? [...pendingSubtasks.value] : undefined
+  const aq = autoQueue.value || undefined
 
   if (taskType.value === 'task') {
     if (taskFilename.value) {
       const createFile = !isExistingTaskFile.value
-      emit('add', 'task', taskFilename.value, description.value.trim(), createFile, cm, undefined, undefined, parentTaskId, lt, subs)
+      emit('add', 'task', taskFilename.value, description.value.trim(), createFile, cm, undefined, undefined, parentTaskId, lt, subs, aq)
     } else if (description.value.includes('\n')) {
       // Multi-line unnamed task: auto-generate a file-based task
       const autoFn = autoTaskFilename(description.value)
-      emit('add', 'task', autoFn, description.value.trim(), true, cm, undefined, undefined, parentTaskId, lt, subs)
+      emit('add', 'task', autoFn, description.value.trim(), true, cm, undefined, undefined, parentTaskId, lt, subs, aq)
     } else {
-      emit('add', 'unnamed-task', null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs)
+      emit('add', 'unnamed-task', null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs, aq)
     }
   } else if (taskType.value === 'plan') {
-    emit('add', 'plan', planFilename.value, null, false, cm, undefined, undefined, parentTaskId, lt, subs)
+    emit('add', 'plan', planFilename.value, null, false, cm, undefined, undefined, parentTaskId, lt, subs, aq)
   } else if (taskType.value === 'make-plan') {
-    emit('add', 'make-plan', makePlanFilename.value, description.value.trim(), false, undefined, planDisposition.value, planDisposition.value !== 'manual' ? autoQueuePlan.value : undefined, parentTaskId, lt, subs)
+    emit('add', 'make-plan', makePlanFilename.value, description.value.trim(), false, undefined, planDisposition.value, planDisposition.value !== 'manual' ? autoQueuePlan.value : undefined, parentTaskId, lt, subs, aq)
   } else if (taskType.value === 'investigate') {
-    emit('add', 'investigate', investigateFilename.value, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs)
+    emit('add', 'investigate', investigateFilename.value, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs, aq)
   } else if (taskType.value === 'auto-test') {
-    emit('add', 'auto-test', null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs)
+    emit('add', 'auto-test', null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs, aq)
   } else if (taskType.value === 'agent-test') {
-    emit('add', 'agent-test', null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs)
+    emit('add', 'agent-test', null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs, aq)
   } else {
-    emit('add', taskType.value, null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs)
+    emit('add', taskType.value, null, description.value.trim(), false, cm, undefined, undefined, parentTaskId, lt, subs, aq)
   }
   emit('close')
 }

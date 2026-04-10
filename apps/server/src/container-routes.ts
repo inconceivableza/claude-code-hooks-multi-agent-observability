@@ -1994,7 +1994,7 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     if (!container) return err('Container not found', 404);
 
     const body = await req.json() as any;
-    const { task_type, description, create_file, auto_commit, commit_mode, plan_disposition, auto_queue_plan, parent_task_id, link_type: rawLinkType } = body;
+    const { task_type, description, create_file, auto_commit, commit_mode, plan_disposition, auto_queue_plan, parent_task_id, link_type: rawLinkType, auto_queue } = body;
     const linkType = (['follow-up', 'fix-required', 'check', 'other'].includes(rawLinkType) ? rawLinkType : 'follow-up') as 'follow-up' | 'fix-required' | 'check' | 'other';
     let { filename } = body;
     if (!task_type) return err('task_type required');
@@ -2013,7 +2013,7 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
 
     const effectiveMode = (['auto', 'stage', 'manual'].includes(commit_mode) ? commit_mode : (auto_commit ? 'auto' : 'none')) as 'none' | 'auto' | 'stage' | 'manual';
     const effectiveDisposition = (['add-after', 'add-end'].includes(plan_disposition) ? plan_disposition : 'manual') as 'manual' | 'add-after' | 'add-end';
-    const task = addPlanqTask(containerId, task_type, filename ?? null, description ?? null, effectiveMode === 'auto', effectiveMode, effectiveDisposition, Boolean(auto_queue_plan));
+    const task = addPlanqTask(containerId, task_type, filename ?? null, description ?? null, effectiveMode === 'auto', effectiveMode, effectiveDisposition, Boolean(auto_queue_plan), auto_queue ? 'auto-queue' : 'pending');
     touchPlanqServerModified(containerId);
     // For make-plan, write the prompt to the filename directly (filename IS make-plan-*.md)
     if (task_type === 'make-plan' && filename && description) {

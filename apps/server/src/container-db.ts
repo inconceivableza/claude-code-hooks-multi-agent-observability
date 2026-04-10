@@ -788,7 +788,8 @@ export function addPlanqTask(
   autoCommit = false,
   commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none',
   planDisposition: 'manual' | 'add-after' | 'add-end' = 'manual',
-  autoQueuePlan = false
+  autoQueuePlan = false,
+  initialStatus: 'pending' | 'auto-queue' = 'pending'
 ): PlanqTaskRow {
   const maxPos = (db.prepare(
     'SELECT MAX(position) as m FROM planq_tasks WHERE container_id = ?'
@@ -797,8 +798,8 @@ export function addPlanqTask(
   const effectiveMode = commitMode !== 'none' ? commitMode : (autoCommit ? 'auto' : 'none');
   const result = db.prepare(`
     INSERT INTO planq_tasks (container_id, task_type, filename, description, position, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan)
-    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
-  `).run(containerId, taskType, filename ?? null, description ?? null, maxPos + 1, effectiveMode === 'auto' ? 1 : 0, effectiveMode, planDisposition, autoQueuePlan ? 1 : 0);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(containerId, taskType, filename ?? null, description ?? null, maxPos + 1, initialStatus, effectiveMode === 'auto' ? 1 : 0, effectiveMode, planDisposition, autoQueuePlan ? 1 : 0);
   const row = db.prepare('SELECT * FROM planq_tasks WHERE id = ?').get(result.lastInsertRowid) as any;
   return rowToTask(row);
 }
