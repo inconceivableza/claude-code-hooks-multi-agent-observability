@@ -27,7 +27,7 @@
     >←</button>
 
     <!-- Position -->
-    <span class="text-xs text-slate-500 w-4 text-right shrink-0">{{ position }}</span>
+    <span class="text-xs text-slate-500 text-right shrink-0 tabular-nums" style="min-width: 1rem">{{ position }}</span>
 
     <!-- Status indicator -->
     <span v-if="task.status === 'done'" class="text-green-500 text-xs">✅</span>
