@@ -260,10 +260,6 @@ function containerOptionLabel(c: ContainerWithState): string {
   return `${status} ${repo}${wt ? wt : ''} (${sessions} session${sessions !== 1 ? 's' : ''})`
 }
 
-const currentContainer = computed(() =>
-  props.containers.find(c => c.id === selectedContainerId.value)
-)
-
 const visibleSessions = computed(() => {
   const ids = sessionIds.value
   if (selectedSession.value && ids.includes(selectedSession.value)) return ids
