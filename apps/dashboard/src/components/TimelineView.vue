@@ -1,16 +1,26 @@
 <template>
   <div class="fixed inset-0 z-40 flex flex-col bg-slate-900">
     <!-- Header -->
-    <div class="flex items-center justify-between px-4 py-2 border-b border-slate-700 bg-slate-800 shrink-0">
-      <div class="flex items-center gap-3">
-        <h2 class="text-sm font-semibold text-slate-200">Timeline</h2>
-        <span v-if="containerLabel" class="text-xs text-slate-400 font-mono">{{ containerLabel }}</span>
+    <div class="flex items-center justify-between px-4 py-2 border-b border-slate-700 bg-slate-800 shrink-0 gap-2">
+      <div class="flex items-center gap-3 min-w-0">
+        <h2 class="text-sm font-semibold text-slate-200 shrink-0">Timeline</h2>
+
+        <!-- Container selector -->
+        <select
+          v-model="selectedContainerId"
+          @change="onContainerChange"
+          class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 font-mono min-w-0 max-w-xs"
+        >
+          <option v-for="c in filteredContainers" :key="c.id" :value="c.id">
+            {{ containerOptionLabel(c) }}
+          </option>
+        </select>
       </div>
-      <div class="flex items-center gap-2">
+
+      <div class="flex items-center gap-1.5 shrink-0 flex-wrap">
         <!-- Time filter -->
         <button
-          v-for="tf in TIME_FILTERS"
-          :key="tf.value"
+          v-for="tf in TIME_FILTERS" :key="tf.value"
           @click="timeFilter = tf.value; reload()"
           class="text-xs px-1.5 py-0.5 rounded"
           :class="timeFilter === tf.value ? 'bg-amber-900/60 text-amber-300' : 'text-slate-500 hover:text-slate-300'"
@@ -18,40 +28,14 @@
         <span class="text-slate-700">|</span>
         <!-- Type filters -->
         <button
-          v-for="et in ENTRY_TYPES"
-          :key="et.value"
+          v-for="et in ENTRY_TYPES" :key="et.value"
           @click="toggleTypeFilter(et.value)"
           class="text-xs px-1.5 py-0.5 rounded"
           :class="typeFilters.has(et.value) ? et.activeClass : 'text-slate-600 hover:text-slate-400'"
         >{{ et.label }}</button>
         <span class="text-slate-700">|</span>
-        <!-- Session filter (compact: show session count if >1) -->
-        <button
-          v-if="sessionIds.length > 1"
-          @click="showSessionPicker = !showSessionPicker"
-          class="text-xs px-1.5 py-0.5 rounded"
-          :class="sessionFilters.size > 0 ? 'bg-purple-900/50 text-purple-300' : 'text-slate-500 hover:text-slate-300'"
-        >{{ sessionFilters.size > 0 ? `${sessionFilters.size}/${sessionIds.length} sessions` : `${sessionIds.length} sessions` }}</button>
-        <span v-if="sessionIds.length > 1" class="text-slate-700">|</span>
         <button @click="emit('close')" class="text-slate-500 hover:text-slate-200 text-sm px-1">✕</button>
       </div>
-    </div>
-
-    <!-- Session picker dropdown -->
-    <div v-if="showSessionPicker" class="absolute top-10 right-20 z-50 bg-slate-800 border border-slate-600 rounded shadow-xl p-2 max-h-60 overflow-y-auto">
-      <button @click="sessionFilters = new Set(); showSessionPicker = false" class="text-xs text-slate-400 hover:text-slate-200 mb-1 block w-full text-left px-1">Show all</button>
-      <label
-        v-for="sid in sessionIds" :key="sid"
-        class="flex items-center gap-1.5 text-xs py-0.5 px-1 hover:bg-slate-700/50 rounded cursor-pointer"
-      >
-        <input
-          type="checkbox"
-          :checked="sessionFilters.size === 0 || sessionFilters.has(sid)"
-          @change="toggleSessionFilter(sid)"
-          class="rounded"
-        />
-        <span class="font-mono text-slate-300">{{ sid.slice(0, 8) }}</span>
-      </label>
     </div>
 
     <!-- Loading -->
@@ -66,28 +50,27 @@
     <!-- Timeline columns + sidebar -->
     <div v-else class="flex-1 flex overflow-hidden relative">
       <!-- Columns area -->
-      <div class="flex-1 flex overflow-hidden" :class="sidebar ? 'mr-0' : ''">
+      <div class="flex-1 flex overflow-hidden">
         <div
           v-for="sid in visibleSessions"
           :key="sid"
           class="flex flex-col border-r border-slate-700 transition-all duration-200 relative"
           :class="columnClass(sid)"
         >
-          <!-- Column header -->
+          <!-- Column header (click to select/deselect single session) -->
           <button
-            @click="maximizedSession = maximizedSession === sid ? null : sid"
-            @dblclick="maximizedSession = null"
+            @click="toggleSelectedSession(sid)"
             class="shrink-0 px-2 py-1.5 text-xs font-mono truncate border-b border-slate-700 hover:bg-slate-700/50 text-left"
-            :class="maximizedSession === sid ? 'bg-slate-700 text-slate-200' : 'text-slate-400'"
-            :title="`${sid} — click to ${maximizedSession === sid ? 'restore' : 'maximize'}, double-click to restore all`"
+            :class="selectedSession === sid ? 'bg-teal-900/40 text-teal-300 border-b-teal-600' : 'text-slate-400'"
+            :title="`Session ${sid}${selectedSession === sid ? ' (click to show all)' : ' (click to focus)'}`"
           >
-            <span v-if="!maximizedSession || maximizedSession === sid">{{ sid.slice(0, 8) }}</span>
-            <span v-else class="text-slate-600 writing-mode-vertical">{{ sid.slice(0, 4) }}</span>
+            <span v-if="!selectedSession || selectedSession === sid">{{ sid.slice(0, 8) }}</span>
+            <span v-else class="text-slate-600">{{ sid.slice(0, 3) }}</span>
           </button>
 
-          <!-- Entries (hidden if minimized) -->
+          <!-- Entries (hidden if another session is selected) -->
           <div
-            v-if="!maximizedSession || maximizedSession === sid"
+            v-if="!selectedSession || selectedSession === sid"
             :ref="el => setColumnRef(sid, el as HTMLElement)"
             class="flex-1 overflow-y-auto px-2 py-1 text-xs"
             @scroll="onColumnScroll(sid, $event)"
@@ -149,9 +132,9 @@
 
           <!-- Scroll-to-bottom button -->
           <button
-            v-if="(!maximizedSession || maximizedSession === sid) && !isAtBottom[sid]"
+            v-if="(!selectedSession || selectedSession === sid) && !isAtBottom[sid]"
             @click="scrollToBottom(sid)"
-            class="absolute bottom-2 right-2 bg-slate-700/90 text-slate-300 text-xs px-2 py-1 rounded shadow hover:bg-slate-600 transition-colors"
+            class="absolute bottom-2 right-2 bg-slate-700/90 text-slate-300 text-xs px-2 py-1 rounded shadow hover:bg-slate-600 transition-colors z-10"
           >↓ Latest</button>
         </div>
       </div>
@@ -166,48 +149,27 @@
           <button @click="sidebar = null" class="text-slate-500 hover:text-slate-200 text-xs">✕</button>
         </div>
         <div class="flex-1 overflow-y-auto p-3 text-xs text-slate-300">
-          <!-- Task sidebar -->
           <template v-if="sidebar.type === 'task' && sidebar.task">
             <div class="space-y-2">
-              <div class="flex items-center gap-2">
-                <span class="text-slate-500">Type:</span>
-                <span class="font-mono">{{ sidebar.task.task_type }}</span>
-              </div>
-              <div v-if="sidebar.task.filename" class="flex items-center gap-2">
-                <span class="text-slate-500">File:</span>
-                <span class="font-mono text-blue-400">{{ sidebar.task.filename }}</span>
-              </div>
-              <div v-if="sidebar.task.description">
-                <span class="text-slate-500">Description:</span>
-                <p class="mt-1 text-slate-300">{{ sidebar.task.description }}</p>
-              </div>
-              <div class="flex items-center gap-2">
-                <span class="text-slate-500">Status:</span>
-                <span :class="sidebar.task.status === 'done' ? 'text-green-400' : sidebar.task.status === 'underway' ? 'text-amber-400' : 'text-slate-400'">{{ sidebar.task.status }}</span>
-              </div>
+              <div class="flex items-center gap-2"><span class="text-slate-500">Type:</span><span class="font-mono">{{ sidebar.task.task_type }}</span></div>
+              <div v-if="sidebar.task.filename" class="flex items-center gap-2"><span class="text-slate-500">File:</span><span class="font-mono text-blue-400">{{ sidebar.task.filename }}</span></div>
+              <div v-if="sidebar.task.description"><span class="text-slate-500">Description:</span><p class="mt-1 text-slate-300">{{ sidebar.task.description }}</p></div>
+              <div class="flex items-center gap-2"><span class="text-slate-500">Status:</span><span :class="sidebar.task.status === 'done' ? 'text-green-400' : sidebar.task.status === 'underway' ? 'text-amber-400' : 'text-slate-400'">{{ sidebar.task.status }}</span></div>
             </div>
           </template>
-
-          <!-- Git sidebar -->
           <template v-else-if="sidebar.type === 'git' && sidebar.hash">
             <div class="space-y-2">
               <div class="flex items-center gap-2">
                 <span class="font-mono text-blue-400">{{ sidebar.hash.slice(0, 10) }}</span>
-                <button @click="emit('open-git', sidebar!.hash)" class="text-xs text-slate-500 hover:text-slate-300">Open in Git View →</button>
+                <button @click="emit('open-git', sidebar!.hash!)" class="text-xs text-slate-500 hover:text-slate-300">Open in Git View →</button>
               </div>
               <div v-if="sidebar.subject" class="text-slate-300">{{ sidebar.subject }}</div>
             </div>
           </template>
-
-          <!-- Log sidebar -->
           <template v-else-if="sidebar.type === 'log'">
             <div class="space-y-2">
               <div class="text-slate-400">{{ sidebar.text }}</div>
-              <button
-                v-if="sidebar.sessionId"
-                @click="emit('open-session', sidebar!.sessionId)"
-                class="text-xs text-indigo-400 hover:text-indigo-300"
-              >Open full session log →</button>
+              <button v-if="sidebar.sessionId" @click="emit('open-session', sidebar!.sessionId!)" class="text-xs text-indigo-400 hover:text-indigo-300">Open full session log →</button>
             </div>
           </template>
         </div>
@@ -222,24 +184,27 @@ import { useTimeline, type TimeFilter, type EntryTypeFilter } from '../composabl
 import type { TimelineEntry, ContainerWithState } from '../types'
 
 const props = defineProps<{
-  containerId: string
-  container?: ContainerWithState
+  initialContainerId: string
+  containers: ContainerWithState[]
+  repoFilter: string
+  hostFilter: string
+  connectionFilter: string
 }>()
 
 const emit = defineEmits<{
   close: []
-  'open-task': [task: { id: number; task_type: string; filename: string | null; description: string | null; status: string }]
   'open-git': [hash: string]
   'open-session': [sessionId: string]
 }>()
 
 const {
   allEntries, filteredBySession, sessionIds, loading,
-  timeFilter, typeFilters, sessionFilters, maximizedSession,
+  timeFilter, typeFilters,
   fetchTimeline,
 } = useTimeline()
 
-const showSessionPicker = ref(false)
+const selectedContainerId = ref(props.initialContainerId)
+const selectedSession = ref<string | null>(null)
 const columnRefMap = new Map<string, HTMLElement>()
 const isAtBottom = reactive<Record<string, boolean>>({})
 
@@ -259,17 +224,59 @@ const sidebarTitle = computed(() => {
   return 'Session Log'
 })
 
-const containerLabel = computed(() => {
-  const c = props.container
-  if (!c) return props.containerId.slice(0, 8)
-  return `${c.machine_hostname ?? ''}${c.container_hostname ? ':' + c.container_hostname : ''}`
+// Filter containers using the same filters as the main dashboard
+const filteredContainers = computed(() => {
+  return props.containers.filter(c => {
+    if (props.repoFilter && c.source_repo !== props.repoFilter) return false
+    if (props.hostFilter && c.machine_hostname !== props.hostFilter) return false
+    if (props.connectionFilter === 'online' && !c.connected) return false
+    if (props.connectionFilter === 'offline' && c.connected) return false
+    return true
+  })
 })
+
+// Derive worktree label for container (matches ContainerCard logic)
+function worktreeLabel(c: ContainerWithState): string {
+  if ((c as any).git_worktree) {
+    const wt = (c as any).git_worktree as string
+    return wt.replace(/^trees\//, '').split('/').pop() ?? wt
+  }
+  if (c.workspace_host_path) {
+    const base = c.workspace_host_path.split('/').pop() ?? ''
+    if (base && base !== c.source_repo) {
+      const m = base.match(new RegExp(`^${c.source_repo}\\.(.+)$`))
+      return m ? `.${m[1]}` : base
+    }
+  }
+  return ''
+}
+
+function containerOptionLabel(c: ContainerWithState): string {
+  const wt = worktreeLabel(c)
+  const sessions = c.active_session_ids?.length ?? 0
+  const status = c.connected ? (c.status === 'busy' ? '●' : c.status === 'awaiting_input' ? '?' : '○') : '×'
+  const repo = c.source_repo.split('/').pop() ?? c.source_repo
+  return `${status} ${repo}${wt ? wt : ''} (${sessions} session${sessions !== 1 ? 's' : ''})`
+}
+
+const currentContainer = computed(() =>
+  props.containers.find(c => c.id === selectedContainerId.value)
+)
 
 const visibleSessions = computed(() => {
   const ids = sessionIds.value
-  if (sessionFilters.value.size > 0) return ids.filter(s => sessionFilters.value.has(s))
+  if (selectedSession.value && ids.includes(selectedSession.value)) return ids
   return ids
 })
+
+function toggleSelectedSession(sid: string) {
+  selectedSession.value = selectedSession.value === sid ? null : sid
+}
+
+function columnClass(sid: string): string {
+  if (selectedSession.value && selectedSession.value !== sid) return 'w-8 shrink-0'
+  return 'flex-1 min-w-0'
+}
 
 const TIME_FILTERS: Array<{ value: TimeFilter; label: string }> = [
   { value: '30min', label: '30m' },
@@ -294,17 +301,6 @@ function toggleTypeFilter(t: EntryTypeFilter) {
   typeFilters.value = s
 }
 
-function toggleSessionFilter(sid: string) {
-  const s = new Set(sessionFilters.value)
-  if (s.has(sid)) s.delete(sid); else s.add(sid)
-  sessionFilters.value = s
-}
-
-function columnClass(sid: string): string {
-  if (maximizedSession.value && maximizedSession.value !== sid) return 'w-8 shrink-0'
-  return 'flex-1 min-w-0'
-}
-
 function setColumnRef(sid: string, el: HTMLElement | null) {
   if (el) columnRefMap.set(sid, el); else columnRefMap.delete(sid)
 }
@@ -319,14 +315,19 @@ function scrollToBottom(sid: string) {
   if (el) { el.scrollTop = el.scrollHeight; isAtBottom[sid] = true }
 }
 
+function onContainerChange() {
+  selectedSession.value = null
+  reload()
+}
+
 function reload() {
-  const sessionArr = props.container?.active_session_ids
-  fetchTimeline(props.containerId, sessionArr)
+  const c = currentContainer.value
+  const sessionArr = c?.active_session_ids
+  fetchTimeline(selectedContainerId.value, sessionArr)
 }
 
 function formatTime(ts: number): string {
-  const d = new Date(ts)
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 function entryIndent(entry: TimelineEntry, entries: TimelineEntry[], idx: number): string {
@@ -341,20 +342,13 @@ function entryIndent(entry: TimelineEntry, entries: TimelineEntry[], idx: number
 function openTaskSidebar(entry: TimelineEntry) {
   if (entry.task) sidebar.value = { type: 'task', task: entry.task }
 }
-
 function openGitSidebar(entry: TimelineEntry) {
   if (entry.commit) sidebar.value = { type: 'git', hash: entry.commit.hash, subject: entry.commit.subject }
 }
-
 function openLogSidebar(entry: TimelineEntry) {
-  sidebar.value = {
-    type: 'log',
-    text: entry.summary ?? entry.prompt ?? '',
-    sessionId: entry.session_id,
-  }
+  sidebar.value = { type: 'log', text: entry.summary ?? entry.prompt ?? '', sessionId: entry.session_id }
 }
 
-// Auto-scroll to bottom when new entries arrive (only if already at bottom)
 watch(allEntries, async () => {
   await nextTick()
   for (const [sid, el] of columnRefMap) {
@@ -367,7 +361,6 @@ watch(allEntries, async () => {
 
 onMounted(() => {
   reload()
-  // Initial scroll to bottom
   nextTick(() => {
     for (const [sid, el] of columnRefMap) {
       el.scrollTop = el.scrollHeight

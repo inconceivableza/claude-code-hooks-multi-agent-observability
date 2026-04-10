@@ -112,10 +112,12 @@
     <!-- Timeline View -->
     <TimelineView
       v-if="timelineContainerId"
-      :container-id="timelineContainerId"
-      :container="containers.get(timelineContainerId)"
+      :initial-container-id="timelineContainerId"
+      :containers="[...containers.values()]"
+      :repo-filter="repoFilter"
+      :host-filter="hostFilter"
+      :connection-filter="connectionFilter"
       @close="timelineContainerId = null"
-      @open-task="(_t) => { /* future: open task sidebar */ }"
       @open-git="(hash) => openGitView(containers.get(timelineContainerId!)?.source_repo ?? '', hash)"
       @open-session="openHistoryBySession"
     />
@@ -142,6 +144,7 @@
         @tasks-changed="handleTasksChanged"
         @open-git-view="openGitView"
         @open-history="openHistory"
+        @open-timeline="openTimeline"
       />
     </main>
   </div>
@@ -271,6 +274,10 @@ function openGitView(repo: string, hash?: string | null) {
 function openHistory(containerId: string, sessionId: string) {
   historyContainerId.value = containerId
   historySessionId.value = sessionId
+}
+
+function openTimeline(containerId: string) {
+  timelineContainerId.value = containerId
 }
 
 function openHistoryBySession(sessionId: string) {

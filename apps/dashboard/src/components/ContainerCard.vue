@@ -37,6 +37,11 @@
             class="text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             @click="emit('open-git-view', container.source_repo, container.git_commit_hash)"
           >branch: <span class="font-mono text-cyan-400">{{ container.git_branch }}</span></button>
+          <button
+            class="text-xs text-teal-600 hover:text-teal-400 cursor-pointer"
+            @click="emit('open-timeline', container.id)"
+            title="Open timeline for this container"
+          >timeline</button>
         </div>
 
         <!-- Row 2, Col 1: workspace host path + container hostname -->
@@ -280,6 +285,7 @@ const emit = defineEmits<{
   'tasks-changed': []
   'open-git-view': [repo: string, hash?: string | null]
   'open-history': [containerId: string, sessionId: string]
+  'open-timeline': [containerId: string]
 }>()
 
 // ── Session hiding ────────────────────────────────────────────────────────────

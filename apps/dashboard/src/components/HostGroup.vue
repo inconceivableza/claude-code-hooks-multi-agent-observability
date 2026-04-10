@@ -17,6 +17,7 @@
         @tasks-changed="emit('tasks-changed')"
         @open-git-view="(repo, hash) => emit('open-git-view', repo, hash)"
         @open-history="(cid, sid) => emit('open-history', cid, sid)"
+        @open-timeline="(cid) => emit('open-timeline', cid)"
       />
     </div>
   </div>
@@ -40,6 +41,7 @@ const emit = defineEmits<{
   'tasks-changed': []
   'open-git-view': [repo: string, hash?: string | null]
   'open-history': [containerId: string, sessionId: string]
+  'open-timeline': [containerId: string]
 }>()
 
 const hasActive = computed(() => props.containers.some(c => c.status === 'busy' || c.status === 'awaiting_input'))

@@ -12,8 +12,6 @@ const loading = ref(false)
 const lastContainerId = ref<string | null>(null)
 const timeFilter = ref<TimeFilter>('2h')
 const typeFilters = ref<Set<EntryTypeFilter>>(new Set(['task-start', 'task-done', 'commit', 'progress', 'prompt']))
-const sessionFilters = ref<Set<string>>(new Set())
-const maximizedSession = ref<string | null>(null)
 
 function sinceMs(): number {
   if (timeFilter.value === 'all') return 0
@@ -66,17 +64,10 @@ function addEntry(containerId: string, entry: TimelineEntry) {
 
 const sessionIds = computed(() => Array.from(entriesBySession.value.keys()).sort())
 
-const filteredEntries = computed(() => {
-  return allEntries.value.filter(e => {
-    if (!typeFilters.value.has(e.type as EntryTypeFilter)) return false
-    if (sessionFilters.value.size > 0 && !sessionFilters.value.has(e.session_id)) return false
-    return true
-  })
-})
-
 const filteredBySession = computed(() => {
   const map = new Map<string, TimelineEntry[]>()
-  for (const e of filteredEntries.value) {
+  for (const e of allEntries.value) {
+    if (!typeFilters.value.has(e.type as EntryTypeFilter)) continue
     const sid = e.session_id || '_unknown'
     if (!map.has(sid)) map.set(sid, [])
     map.get(sid)!.push(e)
@@ -88,17 +79,13 @@ export function useTimeline() {
   return {
     entriesBySession,
     allEntries,
-    filteredEntries,
     filteredBySession,
     sessionIds,
     loading,
     lastContainerId,
     timeFilter,
     typeFilters,
-    sessionFilters,
-    maximizedSession,
     fetchTimeline,
     addEntry,
-    sinceMs,
   }
 }
