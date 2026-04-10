@@ -790,74 +790,71 @@ export interface TimelineEntry {
   prompt?: string
 }
 
-export function getTimelineEntries(containerId: string, sourceRepo: string, since: number, sessionIds?: string[]): TimelineEntry[] {
+export function getTimelineEntries(containerId: string, sourceRepo: string, since: number, _sessionIds?: string[]): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
-  // underway_at and linked_at are stored in seconds; since is in ms
+
+  // -- Task entries --
+  // Use done_at for done tasks.  For task-start, prefer task_session_links.underway_at
+  // when available; otherwise synthesize from done_at (approximate: done - 60s).
   const sinceSec = Math.floor(since / 1000);
-  const sessionFilter = sessionIds?.length
-    ? `AND tsl.session_id IN (${sessionIds.map(() => '?').join(',')})`
-    : '';
-  const sessionParams = sessionIds?.length ? sessionIds : [];
-
-  // Task-start entries (from task_session_links — timestamps in seconds)
-  const taskStarts = db.prepare(`
-    SELECT tsl.session_id, tsl.underway_at, pt.id, pt.task_type, pt.filename, pt.description, pt.status
-    FROM task_session_links tsl
-    JOIN planq_tasks pt ON pt.id = tsl.planq_task_id
-    WHERE pt.container_id = ? AND tsl.underway_at >= ? ${sessionFilter}
-    ORDER BY tsl.underway_at
-  `).all(containerId, sinceSec, ...sessionParams) as any[];
-  // Debug: also check how many exist without the since filter
-  const totalLinks = (db.prepare('SELECT COUNT(*) as c FROM task_session_links tsl JOIN planq_tasks pt ON pt.id = tsl.planq_task_id WHERE pt.container_id = ?').get(containerId) as any)?.c ?? 0;
-  const totalCommitLinks = (db.prepare('SELECT COUNT(*) as c FROM commit_session_links WHERE source_repo = ?').get(sourceRepo) as any)?.c ?? 0;
-  console.log(`[timeline-db] container=${containerId} sinceSec=${sinceSec} sessionIds=${sessionIds?.join(',') ?? 'none'} taskLinks_total=${totalLinks} taskStarts_filtered=${taskStarts.length} commitLinks_total=${totalCommitLinks}`);
-  for (const r of taskStarts) {
-    entries.push({
-      type: 'task-start', timestamp: r.underway_at * 1000, session_id: r.session_id,
-      task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
-    });
-  }
-
-  // Task-done entries (done_at is in ms)
-  const taskDones = db.prepare(`
+  const tasks = db.prepare(`
     SELECT pt.id, pt.task_type, pt.filename, pt.description, pt.status, pt.done_at,
-           tsl.session_id
+           tsl.session_id, tsl.underway_at
     FROM planq_tasks pt
     LEFT JOIN task_session_links tsl ON tsl.planq_task_id = pt.id
-    WHERE pt.container_id = ? AND pt.done_at IS NOT NULL AND pt.done_at >= ?
-    ${sessionIds?.length ? `AND (tsl.session_id IN (${sessionIds.map(() => '?').join(',')}) OR tsl.session_id IS NULL)` : ''}
-    ORDER BY pt.done_at
-  `).all(containerId, since, ...sessionParams) as any[];
-  // Deduplicate: a task done by multiple sessions should appear once
+    WHERE pt.container_id = ?
+      AND (pt.done_at IS NOT NULL AND pt.done_at >= ?
+           OR pt.status = 'underway'
+           OR tsl.underway_at IS NOT NULL AND tsl.underway_at >= ?)
+    ORDER BY COALESCE(tsl.underway_at * 1000, pt.done_at, 0)
+  `).all(containerId, since, sinceSec) as any[];
+  const seenStart = new Set<number>();
   const seenDone = new Set<number>();
-  for (const r of taskDones) {
-    if (seenDone.has(r.id)) continue;
-    seenDone.add(r.id);
-    // Pick the first non-null session_id; skip entries with no session at all
-    const sid = r.session_id;
-    entries.push({
-      type: 'task-done', timestamp: r.done_at, session_id: sid ?? '',
-      task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
-    });
+  for (const r of tasks) {
+    const sid = r.session_id ?? '';
+    // Task-start
+    if (!seenStart.has(r.id)) {
+      seenStart.add(r.id);
+      const startTs = r.underway_at
+        ? r.underway_at * 1000
+        : r.done_at ? r.done_at - 60000 : Date.now();
+      entries.push({
+        type: 'task-start', timestamp: startTs, session_id: sid,
+        task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
+      });
+    }
+    // Task-done
+    if (r.done_at && !seenDone.has(r.id)) {
+      seenDone.add(r.id);
+      entries.push({
+        type: 'task-done', timestamp: r.done_at, session_id: sid,
+        task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
+      });
+    }
   }
 
-  // Commit entries (linked_at is in seconds)
-  const commits = db.prepare(`
-    SELECT csl.session_id, csl.linked_at, gc.hash, gc.subject
-    FROM commit_session_links csl
-    JOIN git_commits gc ON gc.source_repo = csl.source_repo AND gc.hash = csl.commit_hash
-    WHERE csl.source_repo = ? AND csl.linked_at >= ?
-    ${sessionIds?.length ? `AND csl.session_id IN (${sessionIds.map(() => '?').join(',')})` : ''}
-    ORDER BY csl.linked_at
-  `).all(sourceRepo, sinceSec, ...sessionParams) as any[];
-  for (const r of commits) {
+  // -- Commit entries --
+  // author_date is stored in seconds (from git %at format).
+  const commitRows = db.prepare(`
+    SELECT gc.hash, gc.subject, gc.author_date,
+           csl.session_id AS link_session_id
+    FROM git_commits gc
+    LEFT JOIN commit_session_links csl
+      ON csl.source_repo = gc.source_repo AND csl.commit_hash = gc.hash
+    WHERE gc.source_repo = ? AND gc.author_date IS NOT NULL AND gc.author_date >= ?
+    ORDER BY gc.author_date
+    LIMIT 200
+  `).all(sourceRepo, sinceSec) as any[];
+  const seenCommit = new Set<string>();
+  for (const r of commitRows) {
+    if (seenCommit.has(r.hash)) continue;
+    seenCommit.add(r.hash);
     entries.push({
-      type: 'commit', timestamp: r.linked_at * 1000, session_id: r.session_id,
+      type: 'commit', timestamp: r.author_date * 1000, session_id: r.link_session_id ?? '',
       commit: { hash: r.hash, subject: r.subject },
     });
   }
 
-  // Sort all entries by timestamp, cap at 500
   entries.sort((a, b) => a.timestamp - b.timestamp);
   return entries.slice(-500);
 }
