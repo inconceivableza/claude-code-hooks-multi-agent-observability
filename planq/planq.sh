@@ -921,6 +921,8 @@ cmd_list() {
             --filter|-f)    _next_filter=1 ;;
             -f:*)           _filters+=("${arg#-f:}") ;;
             --filter:*)     _filters+=("${arg#--filter:}") ;;
+            --help|-h)      usage_list; return 0 ;;
+            -*)             echo "Unknown option: $arg" >&2; usage_list; return 1 ;;
         esac
     done
 
@@ -996,6 +998,8 @@ cmd_show() {
     for arg in "$@"; do
         case "$arg" in
             --archive|-a) archive=1 ;;
+            --help|-h)    echo "Usage: planq show [-a|--archive] [N]"; echo "  Show details of task N (default: next pending), or archive entry N with -a."; return 0 ;;
+            -*)           echo "Unknown option: $arg" >&2; echo "Usage: planq show [-a|--archive] [N]" >&2; return 1 ;;
             [0-9]*)       task_num="$arg" ;;
         esac
     done
@@ -1497,6 +1501,8 @@ cmd_create() {
             --add-end) add_end="1"; shift ;;
             --auto-queue-plan) auto_queue_plan="1"; shift ;;
             --queue|-q) queue_after="1"; shift ;;
+            --help|-h) usage_create; return 0 ;;
+            -*) echo "Unknown option: $1" >&2; usage_create; return 1 ;;
             *) if [ -z "$description" ]; then description="$1"; else description="$description $1"; fi; shift ;;
         esac
     done
@@ -1827,10 +1833,10 @@ cmd_mark() {
         awaiting-plan|ap)        state=awaiting-plan ;;
         deferred|df)             state=deferred ;;
         auto-commit|+ac)         state=auto-commit ;;
-        stage-commit|+sc)        state=stage-commit ;;
-        manual-commit|+mc)       state=manual-commit ;;
-        no-commit|+nc)           state=no-commit ;;
-        *) echo "Error: state must be done/d, underway/u, inactive/i, queue/q, awaiting-commit/ac, awaiting-plan/ap, deferred/df, auto-commit, stage-commit, manual-commit, or no-commit; got: $state" >&2; return 1 ;;
+        stage-commit|+sc|sc)     state=stage-commit ;;
+        manual-commit|+mc|mc)    state=manual-commit ;;
+        no-commit|+nc|nc)        state=no-commit ;;
+        *) echo "Error: unknown state '$state'. Run 'planq mark --help' for valid states." >&2; return 1 ;;
     esac
     # Parse remaining args: extract --result/--notes flags, collect identifiers
     local mark_result="" mark_notes=""
@@ -2149,6 +2155,8 @@ cmd_archive() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --unarchive|-U) unarchive=1; shift ;;
+            --help|-h) echo "Usage: planq archive [N...] [-U|--unarchive N]"; echo "  Archive done tasks (all if no args), or unarchive with -U."; return 0 ;;
+            -*) echo "Unknown option: $1" >&2; echo "Usage: planq archive [N...] [-U|--unarchive N]" >&2; return 1 ;;
             *) identifiers+=("$1"); shift ;;
         esac
     done
@@ -2412,7 +2420,14 @@ cmd_logs() {
     fi
 }
 
-usage_list()   { echo "Usage: planq list [-a|--archive]"; echo "  List all tasks with status, or list the archive with -a."; }
+usage_list() {
+    echo "Usage: planq list [-a|--archive] [-r|--remaining] [-f <filter>|--filter:<filter>]"
+    echo "  List all tasks with status."
+    echo "  -a, --archive        Show archived tasks instead of active queue"
+    echo "  -r, --remaining      Hide done tasks (shorthand for -f -done)"
+    echo "  -f, --filter <expr>  Filter by status (e.g. done, -done, underway, auto-queue)"
+    echo "  -f:<expr>            Short form (e.g. -f:underway)"
+}
 usage_show()   { echo "Usage: planq show [-a|--archive] [N]"; echo "  Show the next pending task, or task #N if given. Use -a for archive entries."; }
 usage_archive() {
     echo "Usage: planq archive [N|filename|text ...]"
@@ -2589,10 +2604,10 @@ usage_mark()   {
     echo "  deferred/df         move task to the bottom of the list (skip for now)"
     echo ""
     echo "  Commit flags (modifies the +commit tag on the task line):"
-    echo "  auto-commit (+ac)   Claude commits automatically after task completes"
-    echo "  stage-commit (+sc)  Claude stages changes; task pauses for user to commit"
-    echo "  manual-commit (+mc) task pauses at awaiting-commit (user stages/commits manually)"
-    echo "  no-commit (+nc)     clear any commit flag"
+    echo "  auto-commit/+ac     Claude commits automatically after task completes"
+    echo "  stage-commit/+sc/sc Claude stages changes; task pauses for user to commit"
+    echo "  manual-commit/+mc/mc task pauses at awaiting-commit (user stages/commits manually)"
+    echo "  no-commit/+nc/nc    clear any commit flag"
 }
 usage_auto()   {
     echo "Usage: planq auto"
@@ -2616,7 +2631,7 @@ usage() {
     echo "Usage: planq.sh <subcommand> [options]"
     echo ""
     echo "Subcommands:"
-    echo "  list    / l                                     List all tasks with status"
+    echo "  list    / l [-a] [-r] [-f <filter>]              List all tasks with status"
     echo "  show    / s [-a] [N]                            Show next pending task, or task #N"
     echo "  run     / r [N] [--dry-run|-n]                 Run next pending task, or task #N"
     echo "  auto    / A                                    Run auto-queued tasks continuously"
@@ -2624,7 +2639,7 @@ usage() {
   do        / do [-t <type>] [-f <file>] [-p <parent>] [<desc>]  Create a task and immediately run it"
     echo "  follow-up / fu <parent> [opts] [<desc>]  Create follow-up subtask (-r to run, -q to queue)"
     echo "  fixup     / fx <parent> [opts] [<desc>]  Create fix-required subtask (-r to run, -q to queue)"
-    echo "  mark    / m <done|underway|inactive|queue|ac|ap|deferred|auto-commit|stage-commit|manual-commit|no-commit> <N|…>  Mark a task (also: mark:<state>)"
+    echo "  mark    / m <d|u|i|q|ac|ap|df|+ac|sc|mc|nc> <N|…>  Mark a task status or commit flag (also: mark:<state>)"
     echo "  delete  / x <N>                                Delete task #N"
     echo "  archive / a [N|…] [--unarchive|-U <N|…>]      Archive done tasks; -a flag on list/show for archive"
     echo "  daemon  / d [start|stop|restart|status]        Manage the planq WebSocket daemon"
