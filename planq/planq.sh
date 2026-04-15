@@ -2430,6 +2430,130 @@ cmd_set_review() {
     _notify_daemon
 }
 
+# ── Profile management ────────────────────────────────────────────────────────
+
+_PROFILES_JSON="${HOME}/.local/devcontainer-sandbox/profiles.json"
+_ACTIVE_PROFILE_FILE="${WORKSPACE_ROOT:-.}/.devcontainer/.active-profile"
+
+_read_profiles_json() {
+    if [ ! -f "$_PROFILES_JSON" ]; then
+        echo "No profiles.json at $_PROFILES_JSON" >&2
+        echo "Copy profiles.json.example from the devcontainer-sandbox repo to that path." >&2
+        return 1
+    fi
+    cat "$_PROFILES_JSON"
+}
+
+cmd_profiles() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            local json
+            json="$(_read_profiles_json)" || return 1
+            echo "Profiles (from $_PROFILES_JSON):"
+            echo ""
+            echo "$json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+profiles = data.get('profiles', {})
+defaults = data.get('defaults', {})
+primary = defaults.get('primary_profile', '')
+chain = defaults.get('fallback_chain', [])
+for name, p in profiles.items():
+    flags = []
+    if name == primary: flags.append('primary')
+    if name in chain: flags.append(f'fallback #{chain.index(name)+1}')
+    flag_str = f'  ({', '.join(flags)})' if flags else ''
+    print(f'  {name:15s} {p.get(\"type\",\"?\"):25s} {p.get(\"description\",\"\")}{flag_str}')
+print()
+print(f'Default: {primary}')
+print(f'Fallback chain: {\" → \".join(chain)}')
+" 2>/dev/null || echo "$json" | python3 -c "import sys,json; [print(f'  {k}: {v.get(\"type\",\"?\")}') for k,v in json.load(sys.stdin).get('profiles',{}).items()]"
+            echo ""
+            local active
+            active="$(cat "$_ACTIVE_PROFILE_FILE" 2>/dev/null)" || true
+            echo "Active profile in this container: ${active:-<not set — using CCS default>}"
+            ;;
+
+        active)
+            local active
+            active="$(cat "$_ACTIVE_PROFILE_FILE" 2>/dev/null)" || true
+            echo "${active:-<not set>}"
+            ;;
+
+        switch)
+            local profile="${1:-}"
+            if [ -z "$profile" ]; then
+                echo "Usage: planq profiles switch <profile-name>" >&2
+                return 1
+            fi
+            # Validate profile exists in profiles.json
+            local json
+            json="$(_read_profiles_json)" || return 1
+            if ! echo "$json" | python3 -c "import sys,json; p=json.load(sys.stdin).get('profiles',{}); sys.exit(0 if '$profile' in p else 1)" 2>/dev/null; then
+                echo "Error: profile '$profile' not found in $_PROFILES_JSON" >&2
+                echo "Available: $(echo "$json" | python3 -c "import sys,json; print(', '.join(json.load(sys.stdin).get('profiles',{}).keys()))")" >&2
+                return 1
+            fi
+            mkdir -p "$(dirname "$_ACTIVE_PROFILE_FILE")"
+            echo "$profile" > "$_ACTIVE_PROFILE_FILE"
+            echo "Switched to profile: $profile"
+            echo "The next ccs session will use this profile."
+            _notify_daemon
+            ;;
+
+        init)
+            local target_profile="${1:-}"
+            local json
+            json="$(_read_profiles_json)" || return 1
+            echo "$json" | python3 -c "
+import sys, json, subprocess
+data = json.load(sys.stdin)
+profiles = data.get('profiles', {})
+target = '$target_profile'
+for name, p in profiles.items():
+    if target and name != target:
+        continue
+    ptype = p.get('type', '')
+    print(f'Setting up profile: {name} ({ptype})')
+    if ptype in ('claude-subscription', 'claude-api'):
+        print(f'  Run: ccs auth create {name}')
+        print(f'  (Interactive — authenticate in browser or enter API key)')
+    elif ptype == 'openai-compatible':
+        base_url = p.get('baseUrl', '')
+        model = p.get('model', '')
+        print(f'  Provider: {p.get(\"provider\",\"?\")} / Model: {model}')
+        print(f'  Base URL: {base_url}')
+        print(f'  Configure: ~/.ccs/{name}.settings.json with your API key')
+    print()
+"
+            echo "Run the commands above to complete profile setup."
+            echo "For subscription profiles, ccs auth create will open a browser for OAuth."
+            ;;
+
+        --help|-h|help)
+            echo "Usage: planq profiles <list|active|switch|init> [args]"
+            echo ""
+            echo "Commands:"
+            echo "  list                  Show all profiles from profiles.json"
+            echo "  active                Show the current container's active profile"
+            echo "  switch <name>         Switch active profile for this container"
+            echo "  init [--profile name] Show setup instructions for all/one profile(s)"
+            echo ""
+            echo "Profile registry: $_PROFILES_JSON"
+            echo "Active profile marker: $_ACTIVE_PROFILE_FILE"
+            ;;
+
+        *)
+            echo "Unknown profiles subcommand: $subcmd" >&2
+            echo "Run: planq profiles --help" >&2
+            return 1
+            ;;
+    esac
+}
+
 cmd_daemon() {
     local daemon_sh="$SCRIPT_DIR/planq-daemon.sh"
     if [ ! -x "$daemon_sh" ]; then
@@ -2694,6 +2818,7 @@ usage() {
     echo "  mark    / m <d|u|i|q|ac|ap|df|+ac|sc|mc|nc> <N|…>  Mark a task status or commit flag (also: mark:<state>)"
     echo "  delete  / x <N>                                Delete task #N"
     echo "  archive / a [N|…] [--unarchive|-U <N|…>]      Archive done tasks; -a flag on list/show for archive"
+    echo "  profiles  <list|active|switch|init>             Manage agent profiles (CCS/OpenCode)"
     echo "  daemon  / d [start|stop|restart|status]        Manage the planq WebSocket daemon"
     echo "  logs    / L [-c] [-f] [-n <N>]                Show daemon log (default: tail)"
     echo "  worktree-review / wr <state|notes <text>|status>  Set/show worktree-level review state"
@@ -2749,6 +2874,7 @@ if _has_help_flag "$@"; then
         mark|m|mark:*|m:*) usage_mark ;;
         delete|x)    usage_delete ;;
         archive|a)   usage_archive ;;
+        profiles)    cmd_profiles --help ;;
         daemon|d)    usage_daemon ;;
         *)           usage ;;
     esac
@@ -2768,6 +2894,7 @@ case "$SUBCMD" in
     mark:*|m:*)          cmd_mark "${SUBCMD#*:}" "$@" ;;
     delete|x)            cmd_delete "$@" ;;
     archive|a)           cmd_archive "$@" ;;
+    profiles)            cmd_profiles "$@" ;;
     daemon|d)            cmd_daemon "$@" ;;
     logs|L)              cmd_logs "$@" ;;
     worktree-review|wr)  shift; cmd_review "$@" ;;
