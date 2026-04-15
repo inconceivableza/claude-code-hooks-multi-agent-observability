@@ -1505,6 +1505,41 @@ def _plans_watcher_thread():
                 _plans_watcher_debounce = t
 
 
+# ── ccusage cost collection ───────────────────────────────────────────────────
+_CCUSAGE_INTERVAL = 300  # seconds between ccusage runs (5 minutes)
+_ccusage_last_run = 0.0
+_ccusage_cache: list = []
+
+def _collect_ccusage() -> list:
+    """Run ccusage daily --json and return parsed cost data.  Cached for _CCUSAGE_INTERVAL."""
+    global _ccusage_last_run, _ccusage_cache
+    now = time.time()
+    if now - _ccusage_last_run < _CCUSAGE_INTERVAL:
+        return _ccusage_cache
+    _ccusage_last_run = now
+    try:
+        result = subprocess.run(
+            ['npx', '--yes', 'ccusage@latest', 'daily', '--json'],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, 'NO_COLOR': '1'},
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            _ccusage_cache = data if isinstance(data, list) else [data]
+            log.info('ccusage: collected %d day(s) of cost data', len(_ccusage_cache))
+        else:
+            log.debug('ccusage: no output (rc=%d)', result.returncode)
+            _ccusage_cache = []
+    except FileNotFoundError:
+        log.debug('ccusage: not installed')
+        _ccusage_cache = []
+    except subprocess.TimeoutExpired:
+        log.warning('ccusage: timed out')
+    except (json.JSONDecodeError, Exception) as e:
+        log.warning('ccusage: error: %s', e)
+    return _ccusage_cache
+
+
 def _send_heartbeat(ws_app):
     git = _git_info()
     source_repo = SOURCE_REPO
@@ -1558,6 +1593,11 @@ def _send_heartbeat(ws_app):
         'plans_files_deleted': plans_files_deleted,
         **git,
     }
+
+    # Include cost data if available (collected at slower cadence than heartbeats)
+    usage_costs = _collect_ccusage()
+    if usage_costs:
+        heartbeat['usage_costs'] = usage_costs
 
     _ws_send(ws_app, heartbeat)
 
