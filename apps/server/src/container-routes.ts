@@ -58,6 +58,8 @@ import {
   type HostSourceReport,
   type TimelineEntry,
   getTimelineEntries,
+  upsertUsageCosts,
+  getUsageCosts,
 } from './container-db';
 
 // ── Heartbeat change detection ────────────────────────────────────────────────
@@ -953,6 +955,11 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
         for (const filename of msg.plans_files_deleted as string[]) cache.delete(filename);
       }
       plansFilesCacheReady.add(containerId);
+    }
+
+    // Store usage cost data from ccusage (sent by daemon every 5 minutes)
+    if (Array.isArray(msg.usage_costs) && msg.usage_costs.length > 0) {
+      upsertUsageCosts(containerId, sourceRepo, container.machine_hostname, msg.usage_costs);
     }
 
     // Broadcast to dashboard clients only when something changed
@@ -1933,6 +1940,19 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
 
     entries.sort((a, b) => a.timestamp - b.timestamp);
     return json(entries.slice(-500));
+  }
+
+  // GET /dashboard/costs?repo=&host=&container=&from=&to=&model=
+  if (pathname === '/dashboard/costs' && method === 'GET') {
+    const costs = getUsageCosts({
+      sourceRepo: url.searchParams.get('repo') || undefined,
+      machineHostname: url.searchParams.get('host') || undefined,
+      containerId: url.searchParams.get('container') || undefined,
+      dateFrom: url.searchParams.get('from') || undefined,
+      dateTo: url.searchParams.get('to') || undefined,
+      model: url.searchParams.get('model') || undefined,
+    });
+    return json(costs);
   }
 
   // GET /dashboard/session-log/:containerId/:sessionId?offset=<lines>&limit=<lines>

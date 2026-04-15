@@ -327,6 +327,29 @@ export function initContainerDatabase(): void {
   if (!hostColumns.includes('devcontainer_source_hash')) {
     db.exec('ALTER TABLE host_source_reports ADD COLUMN devcontainer_source_hash TEXT');
   }
+
+  // Usage cost data from ccusage (per day, per model)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      container_id TEXT NOT NULL,
+      source_repo TEXT NOT NULL,
+      machine_hostname TEXT NOT NULL,
+      date TEXT NOT NULL,
+      model TEXT NOT NULL,
+      agent TEXT DEFAULT 'claude',
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cache_read_tokens INTEGER DEFAULT 0,
+      cache_creation_tokens INTEGER DEFAULT 0,
+      total_cost_usd REAL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(container_id, date, model)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_uc_container ON usage_costs(container_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_uc_date ON usage_costs(date)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_uc_repo ON usage_costs(source_repo)');
 }
 
 export function touchPlanqServerModified(containerId: string): void {
@@ -854,6 +877,71 @@ export function getTimelineEntries(containerId: string, sourceRepo: string, sinc
 
   entries.sort((a, b) => a.timestamp - b.timestamp);
   return entries.slice(-500);
+}
+
+// ── Usage cost data ──────────────────────────────────────────────────────────
+
+export interface UsageCostRow {
+  id: number;
+  container_id: string;
+  source_repo: string;
+  machine_hostname: string;
+  date: string;
+  model: string;
+  agent: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  updated_at: number;
+}
+
+export function upsertUsageCosts(containerId: string, sourceRepo: string, machineHostname: string, costs: any[]): void {
+  const stmt = db.prepare(`
+    INSERT INTO usage_costs (container_id, source_repo, machine_hostname, date, model, agent,
+                             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                             total_cost_usd, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(container_id, date, model) DO UPDATE SET
+      input_tokens = excluded.input_tokens,
+      output_tokens = excluded.output_tokens,
+      cache_read_tokens = excluded.cache_read_tokens,
+      cache_creation_tokens = excluded.cache_creation_tokens,
+      total_cost_usd = excluded.total_cost_usd,
+      agent = excluded.agent,
+      updated_at = excluded.updated_at
+  `);
+  const now = Date.now();
+  for (const c of costs) {
+    if (!c.date || !c.model) continue;
+    stmt.run(
+      containerId, sourceRepo, machineHostname,
+      c.date, c.model, c.agent ?? 'claude',
+      c.input_tokens ?? c.inputTokens ?? 0,
+      c.output_tokens ?? c.outputTokens ?? 0,
+      c.cache_read_tokens ?? c.cacheReadTokens ?? 0,
+      c.cache_creation_tokens ?? c.cacheCreationTokens ?? 0,
+      c.total_cost ?? c.totalCost ?? 0,
+      now,
+    );
+  }
+}
+
+export function getUsageCosts(filters: {
+  sourceRepo?: string; machineHostname?: string; containerId?: string;
+  dateFrom?: string; dateTo?: string; model?: string;
+}): UsageCostRow[] {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (filters.sourceRepo) { conditions.push('source_repo = ?'); params.push(filters.sourceRepo); }
+  if (filters.machineHostname) { conditions.push('machine_hostname = ?'); params.push(filters.machineHostname); }
+  if (filters.containerId) { conditions.push('container_id = ?'); params.push(filters.containerId); }
+  if (filters.dateFrom) { conditions.push('date >= ?'); params.push(filters.dateFrom); }
+  if (filters.dateTo) { conditions.push('date <= ?'); params.push(filters.dateTo); }
+  if (filters.model) { conditions.push('model = ?'); params.push(filters.model); }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return db.prepare(`SELECT * FROM usage_costs ${where} ORDER BY date DESC, model`).all(...params) as UsageCostRow[];
 }
 
 export function addPlanqTask(
