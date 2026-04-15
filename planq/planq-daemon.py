@@ -1431,6 +1431,12 @@ def _apply_changes(ws, changes: list) -> None:
                 _apply_delete_task(task_key)
             elif ctype == 'reorder':
                 _apply_reorder(payload.get('order', []))
+            elif ctype == 'switch_profile':
+                profile = payload.get('profile', '')
+                profile_file = WORKSPACE_ROOT / '.devcontainer' / '.active-profile'
+                profile_file.parent.mkdir(parents=True, exist_ok=True)
+                profile_file.write_text(profile + '\n')
+                log.info('Switched active profile to: %s', profile)
             ack_ids.append(cid)
         except Exception as e:
             log.error('Failed to apply change %s (%s): %s', cid, ctype, e)
@@ -1503,6 +1509,17 @@ def _plans_watcher_thread():
                 t.daemon = True
                 t.start()
                 _plans_watcher_debounce = t
+
+
+# ── Active profile ────────────────────────────────────────────────────────────
+
+def _read_active_profile() -> str:
+    """Read the active CCS/agent profile from .devcontainer/.active-profile."""
+    profile_file = WORKSPACE_ROOT / '.devcontainer' / '.active-profile'
+    try:
+        return profile_file.read_text().strip()
+    except (FileNotFoundError, OSError):
+        return ''
 
 
 # ── ccusage cost collection ───────────────────────────────────────────────────
@@ -1579,6 +1596,7 @@ def _send_heartbeat(ws_app):
         'machine_hostname': MACHINE_HOSTNAME,
         'container_hostname': CONTAINER_HOSTNAME,
         'workspace_host_path': WORKSPACE_HOST_PATH,
+        'active_profile': _read_active_profile(),
         'planq_order': planq,
         'planq_history': history,
         'auto_test_pending': auto_test,

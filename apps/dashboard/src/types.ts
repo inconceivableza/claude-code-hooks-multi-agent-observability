@@ -87,6 +87,7 @@ export interface ContainerWithState {
   review_state?: string | null
   test_results?: string | null
   plans_files_list?: string[]
+  active_profile?: string
 }
 
 export interface GitCommit {

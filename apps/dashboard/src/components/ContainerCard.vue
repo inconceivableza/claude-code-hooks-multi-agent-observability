@@ -46,6 +46,7 @@
         >
           <span v-if="container.workspace_host_path">{{ container.workspace_host_path }}</span>
           <span v-if="container.container_hostname" class="text-slate-600">{{ container.container_hostname }}</span>
+          <span v-if="container.active_profile" class="text-amber-500 border border-amber-700/50 rounded px-1" :title="`Active profile: ${container.active_profile}`">{{ container.active_profile }}</span>
         </div>
 
         <!-- Row 2, Col 2: first submodule label / name / branch -->

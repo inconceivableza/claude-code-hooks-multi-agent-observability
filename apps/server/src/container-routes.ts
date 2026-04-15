@@ -97,7 +97,8 @@ function containerDataChanged(
     existing.planq_order            !== (msg.planq_order ?? null) ||
     existing.review_state           !== (msg.review_state != null ? JSON.stringify(msg.review_state) : null) ||
     existing.test_results           !== (Array.isArray(msg.test_results) ? JSON.stringify(msg.test_results) : null) ||
-    existing.auto_test_pending      !== (msg.auto_test_pending ? JSON.stringify(msg.auto_test_pending) : null)
+    existing.auto_test_pending      !== (msg.auto_test_pending ? JSON.stringify(msg.auto_test_pending) : null) ||
+    existing.active_profile         !== (msg.active_profile ?? '')
   );
 }
 
@@ -836,6 +837,7 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
         running_session_ids: Array.isArray(msg.running_session_ids) ? msg.running_session_ids : [],
         review_state: msg.review_state != null ? JSON.stringify(msg.review_state) : null,
         test_results: Array.isArray(msg.test_results) ? JSON.stringify(msg.test_results) : null,
+        active_profile: msg.active_profile ?? '',
         last_seen: now,
       });
       console.log(`[heartbeat] ${hbCtx}: updated sessions=[${mergedSessionIds.map(s => s.slice(0,8)).join(', ')}] git: staged=${msg.git_staged_count ?? 'n/a'} unstaged=${msg.git_unstaged_count ?? 'n/a'} branch=${msg.git_branch ?? '-'}`);
@@ -1940,6 +1942,20 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
 
     entries.sort((a, b) => a.timestamp - b.timestamp);
     return json(entries.slice(-500));
+  }
+
+  // POST /planq/:id/switch-profile  { profile: "name" }
+  if (pathname.match(/^\/planq\/[^/]+\/switch-profile$/) && method === 'POST') {
+    const containerId = decodeURIComponent(pathname.split('/')[2]!);
+    const container = getContainer(containerId);
+    if (!container) return err('Container not found', 404);
+    const body = await req.json() as any;
+    const profile = body.profile ?? '';
+    sendApplyChanges(containerId, [{
+      id: crId(), type: 'switch_profile', source: 'dashboard', timestamp: Date.now() / 1000,
+      task_key: '', payload: { profile },
+    }]);
+    return json({ ok: true, profile });
   }
 
   // GET /dashboard/costs?repo=&host=&container=&from=&to=&model=
