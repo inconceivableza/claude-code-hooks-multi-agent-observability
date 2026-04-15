@@ -60,6 +60,13 @@
             @click="showReviewBoard = !showReviewBoard"
           >Review Board</button>
 
+          <!-- Costs toggle -->
+          <button
+            class="text-xs border rounded px-2 py-1 transition-colors"
+            :class="showCosts ? 'text-amber-300 border-amber-500 bg-amber-900/30' : 'text-slate-400 hover:text-slate-200 border-slate-600 hover:border-slate-400'"
+            @click="showCosts = !showCosts; if (showCosts) timelineContainerId = null"
+          >Costs</button>
+
           <!-- Timeline (needs a container selected) -->
           <button
             v-if="firstBusyContainerId"
@@ -109,6 +116,14 @@
       @open-history="openHistory"
     />
 
+    <!-- Cost View -->
+    <CostView
+      v-if="showCosts && !showReviewBoard && !timelineContainerId"
+      :repo-filter="repoFilter"
+      :host-filter="hostFilter"
+      @close="showCosts = false"
+    />
+
     <!-- Timeline View (fills below header) -->
     <TimelineView
       v-if="timelineContainerId && !showReviewBoard"
@@ -123,7 +138,7 @@
     />
 
     <!-- Body -->
-    <main v-if="!showReviewBoard && !timelineContainerId" class="px-4 py-4 max-w-7xl mx-auto">
+    <main v-if="!showReviewBoard && !timelineContainerId && !showCosts" class="px-4 py-4 max-w-7xl mx-auto">
       <SystemVersionPanel
         v-show="showVersionPanel"
         :repo-filter="repoFilter"
@@ -163,6 +178,7 @@ import PromptHistoryDialog from './components/PromptHistoryDialog.vue'
 import SystemVersionPanel from './components/SystemVersionPanel.vue'
 import ReviewBoard from './components/ReviewBoard.vue'
 import TimelineView from './components/TimelineView.vue'
+import CostView from './components/CostView.vue'
 import { useTimeline } from './composables/useTimeline'
 
 const { byHost, summary, handleMessage, containers } = useContainers()
@@ -170,6 +186,7 @@ const { load: loadAliases } = useHostnameAliases()
 const { addEntry: addTimelineEntry } = useTimeline()
 const showReviewBoard = ref(getParam('review') === '1')
 const showVersionPanel = ref(false)
+const showCosts = ref(false)
 const timelineContainerId = ref<string | null>(null)
 const versionsHaveUpdates = ref(false)
 const gitRepo = ref<string | null>(null)
