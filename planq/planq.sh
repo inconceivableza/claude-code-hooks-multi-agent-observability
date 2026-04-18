@@ -122,8 +122,8 @@ _dotted_num_advance() {
     depth_nums[$depth]=$(( ${depth_nums[$depth]:-0} + 1 ))
     local d
     for (( d = depth + 1; d < 8; d++ )); do depth_nums[$d]=0; done
-    local result="${depth_nums[0]}"
-    for (( d = 1; d <= depth; d++ )); do result="${result}.${depth_nums[$d]}"; done
+    local result="${depth_nums[0]:-0}"
+    for (( d = 1; d <= depth; d++ )); do result="${result}.${depth_nums[$d]:-0}"; done
     printf '%s' "$result"
 }
 
@@ -135,8 +135,8 @@ _dotted_num_step() {
     local _d="$1" _r _j
     depth_nums[$_d]=$(( ${depth_nums[$_d]:-0} + 1 ))
     for (( _j = _d + 1; _j < 8; _j++ )); do depth_nums[$_j]=0; done
-    _r="${depth_nums[0]}"
-    for (( _j = 1; _j <= _d; _j++ )); do _r="${_r}.${depth_nums[$_j]}"; done
+    _r="${depth_nums[0]:-0}"
+    for (( _j = 1; _j <= _d; _j++ )); do _r="${_r}.${depth_nums[$_j]:-0}"; done
     dotted="$_r"
 }
 
