@@ -103,7 +103,8 @@
             @click.exact="toggleReviewFilterExclusive(f.status)"
             @click.ctrl.exact="toggleReviewFilter(f.status)"
             @click.meta.exact="toggleReviewFilter(f.status)"
-            :title="`${f.label} (${f.count}) — click to filter, Ctrl/Cmd+click to multi-select`"
+            @click.alt.exact="toggleReviewFilterInverted(f.status)"
+            :title="`${f.label} (${f.count}) — click to filter, Ctrl/Cmd+click to multi-select, Alt+click to invert`"
             class="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs transition-all"
             :class="activeReviewFilters.size === 0 || activeReviewFilters.has(f.status)
               ? [f.activeClass, 'opacity-100']
@@ -555,6 +556,15 @@ function toggleReviewFilterExclusive(status: string) {
   } else {
     activeReviewFilters.clear()
     activeReviewFilters.add(status)
+  }
+}
+
+function toggleReviewFilterInverted(status: string) {
+  if (activeReviewFilters.has(status)) {
+    activeReviewFilters.delete(status)
+  } else {
+    activeReviewFilters.clear()
+    for (const f of REVIEW_STATUS_DEFS) { if (f.status !== status) activeReviewFilters.add(f.status) }
   }
 }
 
