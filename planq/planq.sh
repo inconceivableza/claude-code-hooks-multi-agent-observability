@@ -254,7 +254,6 @@ _list_tasks() {
             [ -z "$line" ] && continue
             [[ "$line" == "#"* ]] && continue
             _v2_extract_status "${line#*"- "}"
-            [ "$_v2_status" = "deferred" ] && continue
             _content_depth_step "$line"; _dotted_num_step "$depth"
             _v2_strip_line "$line"
             case "$_v2_status" in
@@ -263,26 +262,15 @@ _list_tasks() {
                 auto-queue)       printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
                 awaiting-commit)  printf "  \033[35m💾 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
                 awaiting-plan)    printf "  \033[36m📋 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
+                deferred)         printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
                 *)                printf "  ▶  %-5s  %s\n" "$dotted" "$_v2_task_part" ;;
             esac
-        done < "$PLANQ_FILE"
-        local _deferred_count=0
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            [[ "$line" == "#"* ]] && continue
-            _v2_extract_status "${line#*"- "}"
-            [ "$_v2_status" = "deferred" ] || continue
-            [ "$_deferred_count" -eq 0 ] && printf "  \033[2m--- deferred ---\033[0m\n"
-            _content_depth_step "$line"; _dotted_num_step "$depth"
-            _v2_strip_line "$line"
-            _deferred_count=$(( _deferred_count + 1 ))
-            printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part"
         done < "$PLANQ_FILE"
         return
     fi
 
     # Filtered display:
-    # Phase 1 — collect all non-deferred tasks into parallel arrays
+    # Phase 1 — collect all tasks (including deferred) into parallel arrays
     local _fl _fs _ft _fd _fdt
     _fl=(); _fs=(); _ft=(); _fd=(); _fdt=()
     depth_nums=()
@@ -290,7 +278,6 @@ _list_tasks() {
         [ -z "$line" ] && continue
         [[ "$line" == "#"* ]] && continue
         _v2_extract_status "${line#*"- "}"
-        [ "$_v2_status" = "deferred" ] && continue
         _content_depth_step "$line"
         _v2_strip_line "$line"
         _fl+=("$line")
@@ -343,6 +330,7 @@ _list_tasks() {
                 auto-queue)      printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 awaiting-commit) printf "  \033[35m💾 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 awaiting-plan)   printf "  \033[36m📋 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                deferred)        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 *)               printf "  ▶  %-5s  %s\n" "$_dt" "$_v2_task_part" ;;
             esac
         else
@@ -353,53 +341,10 @@ _list_tasks() {
                 auto-queue)      printf "  \033[2m⏱  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 awaiting-commit) printf "  \033[2m💾 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 awaiting-plan)   printf "  \033[2m📋 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                deferred)        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 *)               printf "  \033[2m▶  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
             esac
         fi
-    done
-
-    # Deferred section — same filter applied independently
-    local _dl _ds _dtp _dd
-    _dl=(); _ds=(); _dtp=(); _dd=()
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        [[ "$line" == "#"* ]] && continue
-        _v2_extract_status "${line#*"- "}"
-        [ "$_v2_status" = "deferred" ] || continue
-        _content_depth_step "$line"
-        _v2_strip_line "$line"
-        _dl+=("$line")
-        _ds+=("$_v2_status")
-        _dtp+=("${_v2_task_part%%:*}")
-        _dd+=("$depth")
-    done < "$PLANQ_FILE"
-    local _dn="${#_dl[@]}"
-    local _dm _da
-    _dm=(); _da=()
-    for (( _i=0; _i<_dn; _i++ )); do
-        if _filter_check_task "${_ds[$_i]}" "${_dtp[$_i]}" "$@"; then
-            _dm+=( 1 ); else _dm+=( 0 ); fi
-        _da+=( 0 )
-    done
-    for (( _i=0; _i<_dn; _i++ )); do
-        [ "${_dm[$_i]}" -eq 0 ] && continue
-        [ "${_dd[$_i]}" -eq 0 ] && continue
-        _need=$(( _dd[_i] - 1 ))
-        for (( _j=_i-1; _j>=0 && _need>=0; _j-- )); do
-            if [ "${_dd[$_j]}" -eq "$_need" ]; then
-                _da[$_j]=1; _need=$(( _need - 1 ))
-            fi
-        done
-    done
-    depth_nums=()
-    local _deferred_count=0
-    for (( _i=0; _i<_dn; _i++ )); do
-        [ "${_dm[$_i]}" -eq 0 ] && [ "${_da[$_i]}" -eq 0 ] && continue
-        [ "$_deferred_count" -eq 0 ] && printf "  \033[2m--- deferred ---\033[0m\n"
-        _dotted_num_step "${_dd[$_i]}"
-        _v2_strip_line "${_dl[$_i]}"
-        _deferred_count=$(( _deferred_count + 1 ))
-        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part"
     done
 }
 
@@ -409,30 +354,12 @@ _find_task_by_dotted_number() {
     [ ! -f "$PLANQ_FILE" ] && return
     depth_nums=()
     local n=0
-    # Pass 1: non-deferred tasks
     while IFS= read -r line; do
         n=$((n + 1))
         [ -z "$line" ] && continue
         [[ "$line" == "#"* ]] && continue
         local after_dash="${line#*"- "}" _v2_status
         _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] && continue
-        local depth dotted
-        _content_depth_step "$line"; _dotted_num_step "$depth"
-        if [ "$dotted" = "$target" ]; then
-            printf '%d\t%s\n' "$n" "$line"
-            return
-        fi
-    done < "$PLANQ_FILE"
-    # Pass 2: deferred tasks
-    n=0; depth_nums=()
-    while IFS= read -r line; do
-        n=$((n + 1))
-        [ -z "$line" ] && continue
-        [[ "$line" == "#"* ]] && continue
-        local after_dash="${line#*"- "}" _v2_status
-        _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] || continue
         local depth dotted
         _content_depth_step "$line"; _dotted_num_step "$depth"
         if [ "$dotted" = "$target" ]; then
@@ -455,7 +382,6 @@ _get_dotted_number_for_line() {
         [[ "$line" == "#"* ]] && continue
         local after_dash="${line#*"- "}" _v2_status
         _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] && continue
         local depth dotted
         _content_depth_step "$line"; _dotted_num_step "$depth"
         if [ "$n" -eq "$target_line" ]; then
@@ -488,29 +414,12 @@ _find_task_by_number() {
     local target="$1"
     [ ! -f "$PLANQ_FILE" ] && return
     local n=0 i=0
-    # Pass 1: non-deferred tasks
     while IFS= read -r line; do
         n=$((n + 1))
         [ -z "$line" ] && continue
         [[ "$line" == "#"* ]] && continue
         local after_dash="${line#*"- "}" _v2_status
         _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] && continue
-        i=$((i + 1))
-        if [ "$i" -eq "$target" ]; then
-            printf '%d\t%s\n' "$n" "$line"
-            return
-        fi
-    done < "$PLANQ_FILE"
-    # Pass 2: deferred tasks
-    n=0
-    while IFS= read -r line; do
-        n=$((n + 1))
-        [ -z "$line" ] && continue
-        [[ "$line" == "#"* ]] && continue
-        local after_dash="${line#*"- "}" _v2_status
-        _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] || continue
         i=$((i + 1))
         if [ "$i" -eq "$target" ]; then
             printf '%d\t%s\n' "$n" "$line"
