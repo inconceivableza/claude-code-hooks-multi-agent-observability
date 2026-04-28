@@ -14,6 +14,11 @@ ALLOWED_RM_DIRECTORIES = [
     'trees/',
 ]
 
+# Allowed file suffixes — rm is permitted on files matching these, regardless of flags
+ALLOWED_RM_SUFFIXES = [
+    'index.lock',  # git lock files; must be removable to unblock stuck worktree operations
+]
+
 def is_path_in_allowed_directory(command, allowed_dirs):
     """
     Check if the rm command targets paths exclusively within allowed directories.
@@ -62,73 +67,118 @@ def is_path_in_allowed_directory(command, allowed_dirs):
     # All paths are within allowed directories
     return True
 
-def is_dangerous_rm_command(command, allowed_dirs=None):
+def is_path_with_allowed_suffix(command, allowed_suffixes):
+    """
+    Check if all rm target paths end with an allowed suffix.
+    Returns True if every targeted path ends with one of the allowed suffixes.
+    """
+    path_pattern = r'rm\s+(?:-[\w]+\s+|--[\w-]+\s+)*(.+)$'
+    match = re.search(path_pattern, command, re.IGNORECASE)
+    if not match:
+        return False
+
+    path_str = match.group(1).strip()
+    paths = path_str.split()
+
+    if not paths:
+        return False
+
+    for path in paths:
+        path = path.strip('\'"')
+        if not path:
+            continue
+        if not any(path.endswith(suffix) for suffix in allowed_suffixes):
+            return False
+
+    return True
+
+
+def is_dangerous_rm_command(command, allowed_dirs=None, allowed_suffixes=None):
     """
     Comprehensive detection of dangerous rm commands.
     Matches various forms of rm -rf and similar destructive patterns.
-    Returns False if the command targets only allowed directories.
+    Returns False if the command targets only allowed directories or suffixes.
+
+    Splits compound bash commands on shell separators first so that 'rm'
+    appearing in commit messages, heredocs, or other non-command text does
+    not cause false positives.
 
     Args:
         command: The bash command to check
-        allowed_dirs: List of directory paths where rm -rf is permitted
+        allowed_dirs: List of directory path prefixes where rm -rf is permitted
+        allowed_suffixes: List of filename suffixes where rm is always permitted
 
     Returns:
         True if the command is dangerous and should be blocked, False otherwise
     """
     if allowed_dirs is None:
         allowed_dirs = []
+    if allowed_suffixes is None:
+        allowed_suffixes = []
 
-    # Normalize command by removing extra spaces and converting to lowercase
-    normalized = ' '.join(command.lower().split())
-
-    # Pattern 1: Standard rm -rf variations
-    patterns = [
-        r'\brm\s+.*-[a-z]*r[a-z]*f',  # rm -rf, rm -fr, rm -Rf, etc.
-        r'\brm\s+.*-[a-z]*f[a-z]*r',  # rm -fr variations
-        r'\brm\s+--recursive\s+--force',  # rm --recursive --force
-        r'\brm\s+--force\s+--recursive',  # rm --force --recursive
-        r'\brm\s+-r\s+.*-f',  # rm -r ... -f
-        r'\brm\s+-f\s+.*-r',  # rm -f ... -r
+    # Extract actual rm command segments from compound bash commands.
+    # Splitting on shell separators prevents 'rm' in heredocs or commit messages
+    # from being treated as a command invocation.
+    segments = re.split(r'(?:&&|\|\||[;|]|\n|\r)', command)
+    rm_segments = [
+        seg.strip() for seg in segments
+        if re.match(r'(?:(?:sudo|env(?:\s+\S+=\S+)*)\s+)*rm\b', seg.strip())
     ]
 
-    # Check for dangerous patterns
-    is_potentially_dangerous = False
-    for pattern in patterns:
-        if re.search(pattern, normalized):
-            is_potentially_dangerous = True
-            break
-
-    # If not found in Pattern 1, check Pattern 2
-    if not is_potentially_dangerous:
-        # Pattern 2: Check for rm with recursive flag targeting dangerous paths
-        dangerous_paths = [
-            r'/',           # Root directory
-            r'/\*',         # Root with wildcard
-            r'~',           # Home directory
-            r'~/',          # Home directory path
-            r'\$HOME',      # Home environment variable
-            r'\.\.',        # Parent directory references
-            r'\*',          # Wildcards in general rm -rf context
-            r'\.',          # Current directory
-            r'\.\s*$',      # Current directory at end of command
-        ]
-
-        if re.search(r'\brm\s+.*-[a-z]*r', normalized):  # If rm has recursive flag
-            for path in dangerous_paths:
-                if re.search(path, normalized):
-                    is_potentially_dangerous = True
-                    break
-
-    # If not potentially dangerous at all, it's safe
-    if not is_potentially_dangerous:
+    if not rm_segments:
         return False
 
-    # It's potentially dangerous - check if targeting only allowed directories
-    if allowed_dirs and is_path_in_allowed_directory(command, allowed_dirs):
-        return False  # Allowed directory, so not dangerous
+    dangerous_paths = [
+        r'/',           # Root directory
+        r'/\*',         # Root with wildcard
+        r'~',           # Home directory
+        r'~/',          # Home directory path
+        r'\$HOME',      # Home environment variable
+        r'\.\.',        # Parent directory references
+        r'\*',          # Wildcards in general rm -rf context
+        r'\.',          # Current directory
+        r'\.\s*$',      # Current directory at end of command
+    ]
 
-    # Dangerous and not in allowed directories
-    return True
+    for seg in rm_segments:
+        normalized = ' '.join(seg.lower().split())
+
+        # Pattern 1: Standard rm -rf variations
+        patterns = [
+            r'\brm\s+.*-[a-z]*r[a-z]*f',  # rm -rf, rm -fr, rm -Rf, etc.
+            r'\brm\s+.*-[a-z]*f[a-z]*r',  # rm -fr variations
+            r'\brm\s+--recursive\s+--force',  # rm --recursive --force
+            r'\brm\s+--force\s+--recursive',  # rm --force --recursive
+            r'\brm\s+-r\s+.*-f',  # rm -r ... -f
+            r'\brm\s+-f\s+.*-r',  # rm -f ... -r
+        ]
+
+        is_potentially_dangerous = False
+        for pattern in patterns:
+            if re.search(pattern, normalized):
+                is_potentially_dangerous = True
+                break
+
+        # Pattern 2: rm with recursive flag targeting dangerous paths
+        if not is_potentially_dangerous:
+            if re.search(r'\brm\s+.*-[a-z]*r', normalized):
+                for path in dangerous_paths:
+                    if re.search(path, normalized):
+                        is_potentially_dangerous = True
+                        break
+
+        if not is_potentially_dangerous:
+            continue
+
+        # Potentially dangerous — check allowlists
+        if allowed_dirs and is_path_in_allowed_directory(seg, allowed_dirs):
+            continue
+        if allowed_suffixes and is_path_with_allowed_suffix(seg, allowed_suffixes):
+            continue
+
+        return True
+
+    return False
 
 def is_env_file_access(tool_name, tool_input):
     """
@@ -330,8 +380,7 @@ def main():
         if tool_name == 'Bash':
             command = tool_input.get('command', '')
 
-            # Block rm -rf commands unless they target allowed directories
-            if is_dangerous_rm_command(command, ALLOWED_RM_DIRECTORIES):
+            if is_dangerous_rm_command(command, ALLOWED_RM_DIRECTORIES, ALLOWED_RM_SUFFIXES):
                 deny_tool(
                     f"Dangerous rm command detected and prevented. "
                     f"rm -rf is only allowed in these directories: {', '.join(ALLOWED_RM_DIRECTORIES)}"
