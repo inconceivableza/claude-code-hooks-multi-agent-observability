@@ -76,7 +76,7 @@
             :title="`${d.date}: $${d.cost.toFixed(2)}`"
           >
             <!-- Stacked bars per model -->
-            <template v-for="(seg, i) in d.segments" :key="i">
+            <template v-for="(seg, _i) in d.segments" :key="_i">
               <div
                 :class="modelColor(seg.model)"
                 :style="{ height: `${(seg.cost / maxDailyCost) * 100}px`, minHeight: seg.cost > 0 ? '1px' : '0' }"
