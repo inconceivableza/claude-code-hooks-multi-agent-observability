@@ -496,7 +496,7 @@ function saveDesc() {
 const effectiveFilename = computed(() => {
   if (props.task.filename) return props.task.filename
   const d = props.task.description
-  if (d && /^\S+\.md$/.test(d) && ['investigate', 'task', 'plan', 'make-plan'].includes(props.task.task_type)) {
+  if (d && /^\S+\.md$/.test(d)) {
     return d
   }
   return null
