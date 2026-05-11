@@ -890,6 +890,12 @@ _show_task_details() {
             echo "  --- result ---"
             cat "$plans_base/$feedback" | sed 's/^/  /'
         fi
+    elif [[ "$task_type" == manual-test || "$task_type" == manual-commit || "$task_type" == manual-task ]] && [[ "$task_value" == *.md ]]; then
+        printf "  File:  plans/%s\n" "$task_value"
+        if [ -f "$plans_base/$task_value" ]; then
+            echo "  --- preview ---"
+            head -5 "$plans_base/$task_value" | sed 's/^/  /'
+        fi
     else
         printf "  Desc:  %s\n" "$task_value"
     fi
@@ -1107,7 +1113,13 @@ cmd_run() {
             echo ""
             echo "━━━ Manual step required ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             printf "  Type: %s\n" "$task_type"
-            printf "  Task: %s\n" "$task_value"
+            if [[ "$task_value" == *.md ]] && [ -f "$PLANS_DIR/$task_value" ]; then
+                printf "  File: plans/%s\n" "$task_value"
+                echo "  ---"
+                cat "$PLANS_DIR/$task_value" | sed 's/^/  /'
+            else
+                printf "  Task: %s\n" "$task_value"
+            fi
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo ""
             _mark_underway "$line_num" "$task_line"
@@ -1518,7 +1530,7 @@ cmd_create() {
             *) filename="${filename}.md" ;;
         esac
         case "$task_type" in
-            task|plan|make-plan|investigate)
+            task|plan|make-plan|investigate|manual-test|manual-commit|manual-task)
                 case "$filename" in
                     ${task_type}-*) ;;  # already prefixed
                     *) filename="${task_type}-${filename}" ;;
@@ -1565,10 +1577,19 @@ cmd_create() {
             echo "Wrote prompt to: plans/${filename}"
             ;;
         unnamed-task|manual-test|manual-commit|manual-task|agent-test|auto-test|auto-commit)
-            if [ -z "$description" ]; then
-                echo "Error: description required for task type '$task_type'" >&2; return 1
+            if [ -n "$filename" ] && case "$task_type" in manual-test|manual-commit|manual-task) true;; *) false;; esac; then
+                task_line="${task_type}: ${filename}"
+                if [ -n "$description" ]; then
+                    mkdir -p "$PLANS_DIR"
+                    printf '%s\n' "$description" > "$PLANS_DIR/${filename}"
+                    echo "Wrote description to: plans/${filename}"
+                fi
+            else
+                if [ -z "$description" ]; then
+                    echo "Error: description required for task type '$task_type'" >&2; return 1
+                fi
+                task_line="${task_type}: ${description}"
             fi
-            task_line="${task_type}: ${description}"
             ;;
         *)
             echo "Error: unknown task type '$task_type'" >&2; return 1 ;;
@@ -1952,7 +1973,13 @@ _run_task_inline() {
             echo ""
             echo "━━━ Manual step required ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             printf "  Type: %s\n" "$task_type"
-            printf "  Task: %s\n" "$task_value"
+            if [[ "$task_value" == *.md ]] && [ -f "$PLANS_DIR/$task_value" ]; then
+                printf "  File: plans/%s\n" "$task_value"
+                echo "  ---"
+                cat "$PLANS_DIR/$task_value" | sed 's/^/  /'
+            else
+                printf "  Task: %s\n" "$task_value"
+            fi
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo ""
             echo "  Mark done in the dashboard, or run: planq mark done <task>"
@@ -2565,7 +2592,7 @@ cmd_follow_up() {
     if [ -n "$filename" ]; then
         case "$filename" in *.md) ;; *) filename="${filename}.md" ;; esac
         case "$task_type" in
-            task|plan|make-plan|investigate)
+            task|plan|make-plan|investigate|manual-test|manual-commit|manual-task)
                 case "$filename" in
                     ${task_type}-*) ;;
                     *) filename="${task_type}-${filename}" ;;
