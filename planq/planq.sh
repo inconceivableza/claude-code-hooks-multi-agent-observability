@@ -122,8 +122,8 @@ _dotted_num_advance() {
     depth_nums[$depth]=$(( ${depth_nums[$depth]:-0} + 1 ))
     local d
     for (( d = depth + 1; d < 8; d++ )); do depth_nums[$d]=0; done
-    local result="${depth_nums[0]}"
-    for (( d = 1; d <= depth; d++ )); do result="${result}.${depth_nums[$d]}"; done
+    local result="${depth_nums[0]:-0}"
+    for (( d = 1; d <= depth; d++ )); do result="${result}.${depth_nums[$d]:-0}"; done
     printf '%s' "$result"
 }
 
@@ -135,8 +135,8 @@ _dotted_num_step() {
     local _d="$1" _r _j
     depth_nums[$_d]=$(( ${depth_nums[$_d]:-0} + 1 ))
     for (( _j = _d + 1; _j < 8; _j++ )); do depth_nums[$_j]=0; done
-    _r="${depth_nums[0]}"
-    for (( _j = 1; _j <= _d; _j++ )); do _r="${_r}.${depth_nums[$_j]}"; done
+    _r="${depth_nums[0]:-0}"
+    for (( _j = 1; _j <= _d; _j++ )); do _r="${_r}.${depth_nums[$_j]:-0}"; done
     dotted="$_r"
 }
 
@@ -254,7 +254,6 @@ _list_tasks() {
             [ -z "$line" ] && continue
             [[ "$line" == "#"* ]] && continue
             _v2_extract_status "${line#*"- "}"
-            [ "$_v2_status" = "deferred" ] && continue
             _content_depth_step "$line"; _dotted_num_step "$depth"
             _v2_strip_line "$line"
             case "$_v2_status" in
@@ -263,26 +262,15 @@ _list_tasks() {
                 auto-queue)       printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
                 awaiting-commit)  printf "  \033[35m💾 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
                 awaiting-plan)    printf "  \033[36m📋 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
+                deferred)         printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part" ;;
                 *)                printf "  ▶  %-5s  %s\n" "$dotted" "$_v2_task_part" ;;
             esac
-        done < "$PLANQ_FILE"
-        local _deferred_count=0
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            [[ "$line" == "#"* ]] && continue
-            _v2_extract_status "${line#*"- "}"
-            [ "$_v2_status" = "deferred" ] || continue
-            [ "$_deferred_count" -eq 0 ] && printf "  \033[2m--- deferred ---\033[0m\n"
-            _content_depth_step "$line"; _dotted_num_step "$depth"
-            _v2_strip_line "$line"
-            _deferred_count=$(( _deferred_count + 1 ))
-            printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part"
         done < "$PLANQ_FILE"
         return
     fi
 
     # Filtered display:
-    # Phase 1 — collect all non-deferred tasks into parallel arrays
+    # Phase 1 — collect all tasks (including deferred) into parallel arrays
     local _fl _fs _ft _fd _fdt
     _fl=(); _fs=(); _ft=(); _fd=(); _fdt=()
     depth_nums=()
@@ -290,7 +278,6 @@ _list_tasks() {
         [ -z "$line" ] && continue
         [[ "$line" == "#"* ]] && continue
         _v2_extract_status "${line#*"- "}"
-        [ "$_v2_status" = "deferred" ] && continue
         _content_depth_step "$line"
         _v2_strip_line "$line"
         _fl+=("$line")
@@ -343,6 +330,7 @@ _list_tasks() {
                 auto-queue)      printf "  \033[36m⏱  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 awaiting-commit) printf "  \033[35m💾 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 awaiting-plan)   printf "  \033[36m📋 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                deferred)        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 *)               printf "  ▶  %-5s  %s\n" "$_dt" "$_v2_task_part" ;;
             esac
         else
@@ -353,53 +341,10 @@ _list_tasks() {
                 auto-queue)      printf "  \033[2m⏱  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 awaiting-commit) printf "  \033[2m💾 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 awaiting-plan)   printf "  \033[2m📋 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
+                deferred)        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
                 *)               printf "  \033[2m▶  %-5s  %s\033[0m\n" "$_dt" "$_v2_task_part" ;;
             esac
         fi
-    done
-
-    # Deferred section — same filter applied independently
-    local _dl _ds _dtp _dd
-    _dl=(); _ds=(); _dtp=(); _dd=()
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        [[ "$line" == "#"* ]] && continue
-        _v2_extract_status "${line#*"- "}"
-        [ "$_v2_status" = "deferred" ] || continue
-        _content_depth_step "$line"
-        _v2_strip_line "$line"
-        _dl+=("$line")
-        _ds+=("$_v2_status")
-        _dtp+=("${_v2_task_part%%:*}")
-        _dd+=("$depth")
-    done < "$PLANQ_FILE"
-    local _dn="${#_dl[@]}"
-    local _dm _da
-    _dm=(); _da=()
-    for (( _i=0; _i<_dn; _i++ )); do
-        if _filter_check_task "${_ds[$_i]}" "${_dtp[$_i]}" "$@"; then
-            _dm+=( 1 ); else _dm+=( 0 ); fi
-        _da+=( 0 )
-    done
-    for (( _i=0; _i<_dn; _i++ )); do
-        [ "${_dm[$_i]}" -eq 0 ] && continue
-        [ "${_dd[$_i]}" -eq 0 ] && continue
-        _need=$(( _dd[_i] - 1 ))
-        for (( _j=_i-1; _j>=0 && _need>=0; _j-- )); do
-            if [ "${_dd[$_j]}" -eq "$_need" ]; then
-                _da[$_j]=1; _need=$(( _need - 1 ))
-            fi
-        done
-    done
-    depth_nums=()
-    local _deferred_count=0
-    for (( _i=0; _i<_dn; _i++ )); do
-        [ "${_dm[$_i]}" -eq 0 ] && [ "${_da[$_i]}" -eq 0 ] && continue
-        [ "$_deferred_count" -eq 0 ] && printf "  \033[2m--- deferred ---\033[0m\n"
-        _dotted_num_step "${_dd[$_i]}"
-        _v2_strip_line "${_dl[$_i]}"
-        _deferred_count=$(( _deferred_count + 1 ))
-        printf "  \033[2m💤 %-5s  %s\033[0m\n" "$dotted" "$_v2_task_part"
     done
 }
 
@@ -409,30 +354,12 @@ _find_task_by_dotted_number() {
     [ ! -f "$PLANQ_FILE" ] && return
     depth_nums=()
     local n=0
-    # Pass 1: non-deferred tasks
     while IFS= read -r line; do
         n=$((n + 1))
         [ -z "$line" ] && continue
         [[ "$line" == "#"* ]] && continue
         local after_dash="${line#*"- "}" _v2_status
         _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] && continue
-        local depth dotted
-        _content_depth_step "$line"; _dotted_num_step "$depth"
-        if [ "$dotted" = "$target" ]; then
-            printf '%d\t%s\n' "$n" "$line"
-            return
-        fi
-    done < "$PLANQ_FILE"
-    # Pass 2: deferred tasks
-    n=0; depth_nums=()
-    while IFS= read -r line; do
-        n=$((n + 1))
-        [ -z "$line" ] && continue
-        [[ "$line" == "#"* ]] && continue
-        local after_dash="${line#*"- "}" _v2_status
-        _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] || continue
         local depth dotted
         _content_depth_step "$line"; _dotted_num_step "$depth"
         if [ "$dotted" = "$target" ]; then
@@ -455,7 +382,6 @@ _get_dotted_number_for_line() {
         [[ "$line" == "#"* ]] && continue
         local after_dash="${line#*"- "}" _v2_status
         _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] && continue
         local depth dotted
         _content_depth_step "$line"; _dotted_num_step "$depth"
         if [ "$n" -eq "$target_line" ]; then
@@ -488,29 +414,12 @@ _find_task_by_number() {
     local target="$1"
     [ ! -f "$PLANQ_FILE" ] && return
     local n=0 i=0
-    # Pass 1: non-deferred tasks
     while IFS= read -r line; do
         n=$((n + 1))
         [ -z "$line" ] && continue
         [[ "$line" == "#"* ]] && continue
         local after_dash="${line#*"- "}" _v2_status
         _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] && continue
-        i=$((i + 1))
-        if [ "$i" -eq "$target" ]; then
-            printf '%d\t%s\n' "$n" "$line"
-            return
-        fi
-    done < "$PLANQ_FILE"
-    # Pass 2: deferred tasks
-    n=0
-    while IFS= read -r line; do
-        n=$((n + 1))
-        [ -z "$line" ] && continue
-        [[ "$line" == "#"* ]] && continue
-        local after_dash="${line#*"- "}" _v2_status
-        _v2_extract_status "$after_dash"
-        [ "$_v2_status" = "deferred" ] || continue
         i=$((i + 1))
         if [ "$i" -eq "$target" ]; then
             printf '%d\t%s\n' "$n" "$line"
@@ -759,6 +668,7 @@ _parse_task() {
     task_manual_commit=""
     task_add_after=""
     task_add_end=""
+    task_add_subtask=""
     task_auto_queue_plan=""
     if [[ "$task_value" == *" +auto-commit" ]]; then
         task_auto_commit="1"
@@ -783,6 +693,10 @@ _parse_task() {
     if [[ "$task_value" == *" +add-end" ]]; then
         task_add_end="1"
         task_value="${task_value% +add-end}"
+    fi
+    if [[ "$task_value" == *" +add-subtask" ]]; then
+        task_add_subtask="1"
+        task_value="${task_value% +add-subtask}"
     fi
 }
 
@@ -921,6 +835,8 @@ cmd_list() {
             --filter|-f)    _next_filter=1 ;;
             -f:*)           _filters+=("${arg#-f:}") ;;
             --filter:*)     _filters+=("${arg#--filter:}") ;;
+            --help|-h)      usage_list; return 0 ;;
+            -*)             echo "Unknown option: $arg" >&2; usage_list; return 1 ;;
         esac
     done
 
@@ -974,6 +890,12 @@ _show_task_details() {
             echo "  --- result ---"
             cat "$plans_base/$feedback" | sed 's/^/  /'
         fi
+    elif [[ "$task_type" == manual-test || "$task_type" == manual-commit || "$task_type" == manual-task ]] && [[ "$task_value" == *.md ]]; then
+        printf "  File:  plans/%s\n" "$task_value"
+        if [ -f "$plans_base/$task_value" ]; then
+            echo "  --- preview ---"
+            head -5 "$plans_base/$task_value" | sed 's/^/  /'
+        fi
     else
         printf "  Desc:  %s\n" "$task_value"
     fi
@@ -981,7 +903,9 @@ _show_task_details() {
     [ -n "$task_stage_commit" ] && printf "  Stage-commit after: yes\n"
     [ -n "$task_manual_commit" ] && printf "  Manual-commit after: yes\n"
     if [ "$task_type" = "make-plan" ]; then
-        if [ -n "$task_add_after" ]; then
+        if [ -n "$task_add_subtask" ]; then
+            printf "  Plan disposition: add-subtask%s\n" "${task_auto_queue_plan:+ (auto-queue)}"
+        elif [ -n "$task_add_after" ]; then
             printf "  Plan disposition: add-after%s\n" "${task_auto_queue_plan:+ (auto-queue)}"
         elif [ -n "$task_add_end" ]; then
             printf "  Plan disposition: add-end%s\n" "${task_auto_queue_plan:+ (auto-queue)}"
@@ -996,6 +920,8 @@ cmd_show() {
     for arg in "$@"; do
         case "$arg" in
             --archive|-a) archive=1 ;;
+            --help|-h)    echo "Usage: planq show [-a|--archive] [N]"; echo "  Show details of task N (default: next pending), or archive entry N with -a."; return 0 ;;
+            -*)           echo "Unknown option: $arg" >&2; echo "Usage: planq show [-a|--archive] [N]" >&2; return 1 ;;
             [0-9]*)       task_num="$arg" ;;
         esac
     done
@@ -1081,6 +1007,9 @@ cmd_run() {
             make-plan)     echo "[dry-run] Would run: claude \"\$(cat $PLANS_DIR/$task_value) Write the plan to plans/${task_value/#make-plan-/plan-}.\"" ;;
             investigate)   echo "[dry-run] Would run: claude \"\$(cat $PLANS_DIR/$task_value) Write your findings to plans/${task_value/#investigate-/feedback-}.\"" ;;
             unnamed-task)  echo "[dry-run] Would run: claude \"$task_value\"" ;;
+            auto-test)     echo "[dry-run] Would run test command: $task_value" ;;
+            agent-test)    echo "[dry-run] Would run: claude \"$task_value\" (as testing agent)" ;;
+            auto-commit)   echo "[dry-run] Would run: claude auto-commit $task_value" ;;
             manual-*) echo "[dry-run] Would prompt for manual step: $task_value" ;;
             *)        echo "[dry-run] Unknown task type: $task_type" ;;
         esac
@@ -1115,12 +1044,24 @@ cmd_run() {
             prompt="$(cat "$prompt_file")"
             target_plan="${task_value/#make-plan-/plan-}"
             claude "${prompt} Write the plan to plans/${target_plan}. REQUIRED FINAL STEP: Write a brief summary of the plan you created to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
-            if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
+            if [ -n "$task_add_after" ] || [ -n "$task_add_end" ] || [ -n "$task_add_subtask" ]; then
                 _mark_done "$line_num" "$task_line"
                 # After marking done the line number is now a done line; insert/append the plan
                 local new_plan_task="- plan: ${target_plan}"
                 [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
-                if [ -n "$task_add_after" ]; then
+                if [ -n "$task_add_subtask" ]; then
+                    # Add as subtask (indented under the make-plan task)
+                    local _raw_line
+                    _raw_line="$(sed -n "${line_num}p" "$PLANQ_FILE" 2>/dev/null || echo "")"
+                    local _depth=0
+                    local _indent="${_raw_line%%[! ]*}"
+                    _depth=$(( ${#_indent} / 2 ))
+                    local _child_indent
+                    _child_indent="$(printf '%*s' $(( (_depth + 1) * 2 )) '')"
+                    new_plan_task="${_child_indent}${new_plan_task}"
+                    _insert_after_line "$line_num" "$new_plan_task"
+                    echo "make-plan: Added 'plan: ${target_plan}' as subtask."
+                elif [ -n "$task_add_after" ]; then
                     _insert_after_line "$line_num" "$new_plan_task"
                     echo "make-plan: Added 'plan: ${target_plan}' after current position."
                 else
@@ -1172,7 +1113,13 @@ cmd_run() {
             echo ""
             echo "━━━ Manual step required ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             printf "  Type: %s\n" "$task_type"
-            printf "  Task: %s\n" "$task_value"
+            if [[ "$task_value" == *.md ]] && [ -f "$PLANS_DIR/$task_value" ]; then
+                printf "  File: plans/%s\n" "$task_value"
+                echo "  ---"
+                cat "$PLANS_DIR/$task_value" | sed 's/^/  /'
+            else
+                printf "  Task: %s\n" "$task_value"
+            fi
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo ""
             _mark_underway "$line_num" "$task_line"
@@ -1479,11 +1426,12 @@ _random_hex7() {
 }
 
 cmd_create() {
-    local task_type="unnamed-task" task_type_explicit="" filename="" description="" auto_commit="" stage_commit="" manual_commit="" add_after="" add_end="" auto_queue_plan="" parent="" link_type="follow-up" queue_after=""
+    local task_type="unnamed-task" task_type_explicit="" filename="" slug="" description="" auto_commit="" stage_commit="" manual_commit="" add_after="" add_end="" auto_queue_plan="" parent="" link_type="follow-up" queue_after=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --type|-t) task_type="${2:-}"; task_type_explicit="1"; shift 2 ;;
             --file|-f) filename="${2:-}"; shift 2 ;;
+            --slug|-s) slug="${2:-}"; shift 2 ;;
             --parent|-p) parent="${2:-}"; shift 2 ;;
             --link-type|-l) link_type="${2:-}"; shift 2 ;;
             --auto-commit) auto_commit="1"; shift ;;
@@ -1493,9 +1441,20 @@ cmd_create() {
             --add-end) add_end="1"; shift ;;
             --auto-queue-plan) auto_queue_plan="1"; shift ;;
             --queue|-q) queue_after="1"; shift ;;
+            --help|-h) usage_create; return 0 ;;
+            -*) echo "Unknown option: $1" >&2; usage_create; return 1 ;;
             *) if [ -z "$description" ]; then description="$1"; else description="$description $1"; fi; shift ;;
         esac
     done
+
+    # -s slug: generate filename as $type-$slug.md (type defaults to task)
+    if [ -n "$slug" ] && [ -z "$filename" ]; then
+        local _slug_type="$task_type"
+        [ "$_slug_type" = "unnamed-task" ] && _slug_type="task"
+        filename="${_slug_type}-${slug}.md"
+        # If type wasn't explicitly given, set it based on the generated prefix
+        [ -z "$task_type_explicit" ] && task_type="$_slug_type" && task_type_explicit="1"
+    fi
 
     # planq-order.txt is line-based: newlines in descriptions break parsing.
     # For file-based types (task/plan/make-plan) newlines are fine — they go
@@ -1571,7 +1530,7 @@ cmd_create() {
             *) filename="${filename}.md" ;;
         esac
         case "$task_type" in
-            task|plan|make-plan)
+            task|plan|make-plan|investigate|manual-test|manual-commit|manual-task)
                 case "$filename" in
                     ${task_type}-*) ;;  # already prefixed
                     *) filename="${task_type}-${filename}" ;;
@@ -1605,11 +1564,32 @@ cmd_create() {
             printf '%s\n' "$description" > "$PLANS_DIR/${filename}"
             echo "Wrote prompt to: plans/${filename}"
             ;;
-        unnamed-task|manual-test|manual-commit|manual-task|agent-test)
-            if [ -z "$description" ]; then
-                echo "Error: description required for task type '$task_type'" >&2; return 1
+        investigate)
+            if [ -z "$filename" ]; then
+                echo "Error: --file required for investigate (the prompt filename, e.g. investigate-foo.md)" >&2; return 1
             fi
-            task_line="${task_type}: ${description}"
+            if [ -z "$description" ]; then
+                echo "Error: description (the prompt / question to investigate) required for investigate" >&2; return 1
+            fi
+            task_line="${task_type}: ${filename}"
+            mkdir -p "$PLANS_DIR"
+            printf '%s\n' "$description" > "$PLANS_DIR/${filename}"
+            echo "Wrote prompt to: plans/${filename}"
+            ;;
+        unnamed-task|manual-test|manual-commit|manual-task|agent-test|auto-test|auto-commit)
+            if [ -n "$filename" ] && case "$task_type" in manual-test|manual-commit|manual-task) true;; *) false;; esac; then
+                task_line="${task_type}: ${filename}"
+                if [ -n "$description" ]; then
+                    mkdir -p "$PLANS_DIR"
+                    printf '%s\n' "$description" > "$PLANS_DIR/${filename}"
+                    echo "Wrote description to: plans/${filename}"
+                fi
+            else
+                if [ -z "$description" ]; then
+                    echo "Error: description required for task type '$task_type'" >&2; return 1
+                fi
+                task_line="${task_type}: ${description}"
+            fi
             ;;
         *)
             echo "Error: unknown task type '$task_type'" >&2; return 1 ;;
@@ -1797,15 +1777,15 @@ cmd_mark() {
         done|d)                  state=done ;;
         underway|u)              state=underway ;;
         inactive|i)              state=inactive ;;
-        queue|q)                 state=queue ;;
+        queue|q|auto-queue|aq)   state=queue ;;
         awaiting-commit|ac)      state=awaiting-commit ;;
         awaiting-plan|ap)        state=awaiting-plan ;;
         deferred|df)             state=deferred ;;
         auto-commit|+ac)         state=auto-commit ;;
-        stage-commit|+sc)        state=stage-commit ;;
-        manual-commit|+mc)       state=manual-commit ;;
-        no-commit|+nc)           state=no-commit ;;
-        *) echo "Error: state must be done/d, underway/u, inactive/i, queue/q, awaiting-commit/ac, awaiting-plan/ap, deferred/df, auto-commit, stage-commit, manual-commit, or no-commit; got: $state" >&2; return 1 ;;
+        stage-commit|+sc|sc)     state=stage-commit ;;
+        manual-commit|+mc|mc)    state=manual-commit ;;
+        no-commit|+nc|nc)        state=no-commit ;;
+        *) echo "Error: unknown state '$state'. Run 'planq mark --help' for valid states." >&2; return 1 ;;
     esac
     # Parse remaining args: extract --result/--notes flags, collect identifiers
     local mark_result="" mark_notes=""
@@ -1850,18 +1830,35 @@ cmd_mark() {
                 if [ -n "$mark_result" ]; then
                     _write_test_result "$task_line" "$mark_result" "$mark_notes"
                 fi
-                # For make-plan with +add-after or +add-end, insert the plan task
-                if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; } && [[ "$raw_line" != *"[done]"* ]]; then
+                # For make-plan with +add-after, +add-end, or +add-subtask, insert the plan task
+                if [ "$task_type" = "make-plan" ] && { [ -n "$task_add_after" ] || [ -n "$task_add_end" ] || [ -n "$task_add_subtask" ]; } && [[ "$raw_line" != *"[done]"* ]]; then
                     local target_plan="${task_value/#make-plan-/plan-}"
                     if grep -qF "plan: ${target_plan}" "$PLANQ_FILE" 2>/dev/null; then
                         echo "make-plan: Plan 'plan: ${target_plan}' already in queue, skipping."
                     else
-                        local new_plan_task="- plan: ${target_plan}"
-                        [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
-                        if [ -n "$task_add_after" ]; then
+                        local new_plan_task
+                        if [ -n "$task_add_subtask" ]; then
+                            # Add as a subtask (indented under the make-plan task)
+                            local _parent_depth=0
+                            local _parsed
+                            _parsed="$(_v2_parse_line "$raw_line" 2>/dev/null)" || true
+                            if [ -n "$_parsed" ]; then
+                                _parent_depth=$(( ${#_parsed%%	*} / 2 ))
+                            fi
+                            local _child_indent
+                            _child_indent="$(printf '%*s' $(( (_parent_depth + 1) * 2 )) '')"
+                            new_plan_task="${_child_indent}- plan: ${target_plan}"
+                            [ -n "$task_auto_queue_plan" ] && new_plan_task="${_child_indent}- [auto-queue] plan: ${target_plan}"
+                            _insert_after_line "$line_num" "$new_plan_task"
+                            echo "make-plan: Added 'plan: ${target_plan}' as subtask."
+                        elif [ -n "$task_add_after" ]; then
+                            new_plan_task="- plan: ${target_plan}"
+                            [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
                             _insert_after_line "$line_num" "$new_plan_task"
                             echo "make-plan: Added 'plan: ${target_plan}' after current position."
                         else
+                            new_plan_task="- plan: ${target_plan}"
+                            [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
                             printf '\n%s\n' "$new_plan_task" >> "$PLANQ_FILE"
                             echo "make-plan: Added 'plan: ${target_plan}' at end of queue."
                         fi
@@ -1925,11 +1922,21 @@ _run_task_inline() {
             prompt="$(cat "$prompt_file")"
             target_plan="${task_value/#make-plan-/plan-}"
             _invoke_claude "${prompt} Write the plan to plans/${target_plan}. REQUIRED FINAL STEP: Write a brief summary of the plan you created to plans/feedback-${task_value} (create this file even if brief). This summary appears in the project dashboard."
-            if [ -n "$task_add_after" ] || [ -n "$task_add_end" ]; then
+            if [ -n "$task_add_after" ] || [ -n "$task_add_end" ] || [ -n "$task_add_subtask" ]; then
                 _mark_done "$line_num" "$task_line"
                 local new_plan_task="- plan: ${target_plan}"
                 [ -n "$task_auto_queue_plan" ] && new_plan_task="- [auto-queue] plan: ${target_plan}"
-                if [ -n "$task_add_after" ]; then
+                if [ -n "$task_add_subtask" ]; then
+                    local _raw_line
+                    _raw_line="$(sed -n "${line_num}p" "$PLANQ_FILE" 2>/dev/null || echo "")"
+                    local _depth=0 _indent="${_raw_line%%[! ]*}"
+                    _depth=$(( ${#_indent} / 2 ))
+                    local _child_indent
+                    _child_indent="$(printf '%*s' $(( (_depth + 1) * 2 )) '')"
+                    new_plan_task="${_child_indent}${new_plan_task}"
+                    _insert_after_line "$line_num" "$new_plan_task"
+                    echo "make-plan: Added 'plan: ${target_plan}' as subtask."
+                elif [ -n "$task_add_after" ]; then
                     _insert_after_line "$line_num" "$new_plan_task"
                     echo "make-plan: Added 'plan: ${target_plan}' after current position."
                 else
@@ -1970,7 +1977,13 @@ _run_task_inline() {
             echo ""
             echo "━━━ Manual step required ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             printf "  Type: %s\n" "$task_type"
-            printf "  Task: %s\n" "$task_value"
+            if [[ "$task_value" == *.md ]] && [ -f "$PLANS_DIR/$task_value" ]; then
+                printf "  File: plans/%s\n" "$task_value"
+                echo "  ---"
+                cat "$PLANS_DIR/$task_value" | sed 's/^/  /'
+            else
+                printf "  Task: %s\n" "$task_value"
+            fi
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo ""
             echo "  Mark done in the dashboard, or run: planq mark done <task>"
@@ -2128,6 +2141,8 @@ cmd_archive() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --unarchive|-U) unarchive=1; shift ;;
+            --help|-h) echo "Usage: planq archive [N...] [-U|--unarchive N]"; echo "  Archive done tasks (all if no args), or unarchive with -U."; return 0 ;;
+            -*) echo "Unknown option: $1" >&2; echo "Usage: planq archive [N...] [-U|--unarchive N]" >&2; return 1 ;;
             *) identifiers+=("$1"); shift ;;
         esac
     done
@@ -2355,6 +2370,130 @@ cmd_set_review() {
     _notify_daemon
 }
 
+# ── Profile management ────────────────────────────────────────────────────────
+
+_PROFILES_JSON="${HOME}/.local/devcontainer-sandbox/profiles.json"
+_ACTIVE_PROFILE_FILE="${WORKSPACE_ROOT:-.}/.devcontainer/.active-profile"
+
+_read_profiles_json() {
+    if [ ! -f "$_PROFILES_JSON" ]; then
+        echo "No profiles.json at $_PROFILES_JSON" >&2
+        echo "Copy profiles.json.example from the devcontainer-sandbox repo to that path." >&2
+        return 1
+    fi
+    cat "$_PROFILES_JSON"
+}
+
+cmd_profiles() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            local json
+            json="$(_read_profiles_json)" || return 1
+            echo "Profiles (from $_PROFILES_JSON):"
+            echo ""
+            echo "$json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+profiles = data.get('profiles', {})
+defaults = data.get('defaults', {})
+primary = defaults.get('primary_profile', '')
+chain = defaults.get('fallback_chain', [])
+for name, p in profiles.items():
+    flags = []
+    if name == primary: flags.append('primary')
+    if name in chain: flags.append(f'fallback #{chain.index(name)+1}')
+    flag_str = f'  ({', '.join(flags)})' if flags else ''
+    print(f'  {name:15s} {p.get(\"type\",\"?\"):25s} {p.get(\"description\",\"\")}{flag_str}')
+print()
+print(f'Default: {primary}')
+print(f'Fallback chain: {\" → \".join(chain)}')
+" 2>/dev/null || echo "$json" | python3 -c "import sys,json; [print(f'  {k}: {v.get(\"type\",\"?\")}') for k,v in json.load(sys.stdin).get('profiles',{}).items()]"
+            echo ""
+            local active
+            active="$(cat "$_ACTIVE_PROFILE_FILE" 2>/dev/null)" || true
+            echo "Active profile in this container: ${active:-<not set — using CCS default>}"
+            ;;
+
+        active)
+            local active
+            active="$(cat "$_ACTIVE_PROFILE_FILE" 2>/dev/null)" || true
+            echo "${active:-<not set>}"
+            ;;
+
+        switch)
+            local profile="${1:-}"
+            if [ -z "$profile" ]; then
+                echo "Usage: planq profiles switch <profile-name>" >&2
+                return 1
+            fi
+            # Validate profile exists in profiles.json
+            local json
+            json="$(_read_profiles_json)" || return 1
+            if ! echo "$json" | python3 -c "import sys,json; p=json.load(sys.stdin).get('profiles',{}); sys.exit(0 if '$profile' in p else 1)" 2>/dev/null; then
+                echo "Error: profile '$profile' not found in $_PROFILES_JSON" >&2
+                echo "Available: $(echo "$json" | python3 -c "import sys,json; print(', '.join(json.load(sys.stdin).get('profiles',{}).keys()))")" >&2
+                return 1
+            fi
+            mkdir -p "$(dirname "$_ACTIVE_PROFILE_FILE")"
+            echo "$profile" > "$_ACTIVE_PROFILE_FILE"
+            echo "Switched to profile: $profile"
+            echo "The next ccs session will use this profile."
+            _notify_daemon
+            ;;
+
+        init)
+            local target_profile="${1:-}"
+            local json
+            json="$(_read_profiles_json)" || return 1
+            echo "$json" | python3 -c "
+import sys, json, subprocess
+data = json.load(sys.stdin)
+profiles = data.get('profiles', {})
+target = '$target_profile'
+for name, p in profiles.items():
+    if target and name != target:
+        continue
+    ptype = p.get('type', '')
+    print(f'Setting up profile: {name} ({ptype})')
+    if ptype in ('claude-subscription', 'claude-api'):
+        print(f'  Run: ccs auth create {name}')
+        print(f'  (Interactive — authenticate in browser or enter API key)')
+    elif ptype == 'openai-compatible':
+        base_url = p.get('baseUrl', '')
+        model = p.get('model', '')
+        print(f'  Provider: {p.get(\"provider\",\"?\")} / Model: {model}')
+        print(f'  Base URL: {base_url}')
+        print(f'  Configure: ~/.ccs/{name}.settings.json with your API key')
+    print()
+"
+            echo "Run the commands above to complete profile setup."
+            echo "For subscription profiles, ccs auth create will open a browser for OAuth."
+            ;;
+
+        --help|-h|help)
+            echo "Usage: planq profiles <list|active|switch|init> [args]"
+            echo ""
+            echo "Commands:"
+            echo "  list                  Show all profiles from profiles.json"
+            echo "  active                Show the current container's active profile"
+            echo "  switch <name>         Switch active profile for this container"
+            echo "  init [--profile name] Show setup instructions for all/one profile(s)"
+            echo ""
+            echo "Profile registry: $_PROFILES_JSON"
+            echo "Active profile marker: $_ACTIVE_PROFILE_FILE"
+            ;;
+
+        *)
+            echo "Unknown profiles subcommand: $subcmd" >&2
+            echo "Run: planq profiles --help" >&2
+            return 1
+            ;;
+    esac
+}
+
 cmd_daemon() {
     local daemon_sh="$SCRIPT_DIR/planq-daemon.sh"
     if [ ! -x "$daemon_sh" ]; then
@@ -2391,7 +2530,14 @@ cmd_logs() {
     fi
 }
 
-usage_list()   { echo "Usage: planq list [-a|--archive]"; echo "  List all tasks with status, or list the archive with -a."; }
+usage_list() {
+    echo "Usage: planq list [-a|--archive] [-r|--remaining] [-f <filter>|--filter:<filter>]"
+    echo "  List all tasks with status."
+    echo "  -a, --archive        Show archived tasks instead of active queue"
+    echo "  -r, --remaining      Hide done tasks (shorthand for -f -done)"
+    echo "  -f, --filter <expr>  Filter by status (e.g. done, -done, underway, auto-queue)"
+    echo "  -f:<expr>            Short form (e.g. -f:underway)"
+}
 usage_show()   { echo "Usage: planq show [-a|--archive] [N]"; echo "  Show the next pending task, or task #N if given. Use -a for archive entries."; }
 usage_archive() {
     echo "Usage: planq archive [N|filename|text ...]"
@@ -2404,22 +2550,14 @@ usage_archive() {
 }
 usage_run()    { echo "Usage: planq run [N] [--dry-run|-n]"; echo "  Run the next pending task, or task #N if given, then mark it done."; }
 cmd_follow_up() {
-    # follow-up / fu [taskid] [OPTIONS] [desc]  — create subtask
-    # fixup    / fx [taskid] [OPTIONS] [desc]  — same but with link-type fix-required
+    # follow-up / fu [-p <parent>] [parent] [OPTIONS] [desc]  — create subtask
+    # fixup    / fx [-p <parent>] [parent] [OPTIONS] [desc]  — same but with link-type fix-required
     # Flags: -r/--run (mark underway), -q/--queue (auto-queue), -n/--no-run (just create, default)
+    # Parent can be specified with -p/--parent or as first non-flag positional arg.
     local default_link_type="${1:-follow-up}"
     shift
 
-    local parent="${1:-}"
-    if [ -z "$parent" ]; then
-        echo "Error: parent task ID required (e.g. planq follow-up 3 'Fix the login bug')" >&2
-        return 1
-    fi
-    shift
-
-    # Parse remaining args: extract -r/-n/-q (consumed here) and build create_args
-    # (forwarded to cmd_create without the run-mode flags).
-    local task_type="unnamed-task" filename="" description="" link_type="$default_link_type"
+    local parent="" task_type="unnamed-task" filename="" description="" link_type="$default_link_type"
     local run_mode="no-run"  # default: just create
     local rest_args=("$@")
     local create_args=()
@@ -2429,21 +2567,36 @@ cmd_follow_up() {
             --run|-r)  run_mode="run"; i=$((i+1)) ;;
             --no-run|-n) run_mode="no-run"; i=$((i+1)) ;;
             --queue|-q) run_mode="queue"; i=$((i+1)) ;;
+            --parent|-p) parent="${rest_args[$((i+1))]:-}"; i=$((i+2)) ;;
             --type|-t) task_type="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --file|-f) filename="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
+            --slug|-s) create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
             --link-type|-l) link_type="${rest_args[$((i+1))]:-}"; create_args+=("${rest_args[$i]}" "${rest_args[$((i+1))]:-}"); i=$((i+2)) ;;
-            --parent|-p|--auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--auto-queue-plan)
+            --auto-commit|--stage-commit|--manual-commit|--add-after|--add-end|--add-subtask|--auto-queue-plan)
                 create_args+=("${rest_args[$i]}"); i=$((i+1)) ;;
-            *) if [ -z "$description" ]; then description="${rest_args[$i]}"; else description="$description ${rest_args[$i]}"; fi
-               create_args+=("${rest_args[$i]}"); i=$((i+1)) ;;
+            --help|-h) usage_followup; return 0 ;;
+            *)
+                # First non-flag positional with no parent yet → interpret as parent
+                if [ -z "$parent" ] && [[ "${rest_args[$i]}" =~ ^[0-9.]+$ || "${rest_args[$i]}" == *.md ]]; then
+                    parent="${rest_args[$i]}"; i=$((i+1))
+                else
+                    if [ -z "$description" ]; then description="${rest_args[$i]}"; else description="$description ${rest_args[$i]}"; fi
+                    create_args+=("${rest_args[$i]}"); i=$((i+1))
+                fi
+                ;;
         esac
     done
+
+    if [ -z "$parent" ]; then
+        echo "Error: parent task required (e.g. planq follow-up 3 'Fix the bug' or planq fu -r -p 3 'Fix')" >&2
+        return 1
+    fi
 
     # Normalize filename like cmd_create does
     if [ -n "$filename" ]; then
         case "$filename" in *.md) ;; *) filename="${filename}.md" ;; esac
         case "$task_type" in
-            task|plan|make-plan)
+            task|plan|make-plan|investigate|manual-test|manual-commit|manual-task)
                 case "$filename" in
                     ${task_type}-*) ;;
                     *) filename="${task_type}-${filename}" ;;
@@ -2502,8 +2655,8 @@ cmd_follow_up() {
 }
 
 usage_follow_up() {
-    echo "Usage: planq follow-up <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-l <link-type>] [<desc>]"
-    echo "       planq fixup    <parent> [-r|-n|-q] [-t <type>] [-f <file>] [-l <link-type>] [<desc>]"
+    echo "Usage: planq follow-up [-p <parent>] [<parent>] [-r|-n|-q] [-t <type>] [-f <file>] [-s <slug>] [-l <link-type>] [<desc>]"
+    echo "       planq fixup    [-p <parent>] [<parent>] [-r|-n|-q] [-t <type>] [-f <file>] [-s <slug>] [-l <link-type>] [<desc>]"
     echo "  Create a subtask under <parent>."
     echo "  follow-up / fu  default link type: follow-up"
     echo "  fixup     / fx  default link type: fix-required"
@@ -2526,20 +2679,24 @@ usage_follow_up() {
 }
 
 usage_create() {
-    echo "Usage: planq create [-t <type>] [-f <file>] [-p <parent>] [-l <link-type>] [-q] [<desc>]"
+    echo "Usage: planq create [-t <type>] [-f <file>] [-s <slug>] [-p <parent>] [-l <link-type>] [-q] [<desc>]"
     echo "  Add a task to the planq file."
     echo "  -t, --type       Task type (default: unnamed-task)"
-    echo "  -f, --file       Filename in plans/ (required for task/plan/make-plan types)"
+    echo "  -f, --file       Filename in plans/ (required for task/plan/make-plan/investigate types)"
+    echo "  -s, --slug       Short slug — generates filename as \$type-\$slug.md (type defaults to task)"
     echo "  -p, --parent     Parent task number or filename — creates a subtask inserted after the parent"
     echo "  -l, --link-type  Link type for subtasks: follow-up (default), fix-required, check, or other"
     echo "  --auto-commit    After task: Claude commits automatically"
     echo "  --stage-commit   After task: Claude stages + drafts message, task pauses for user to commit"
     echo "  --manual-commit  After task: task pauses at awaiting-commit (user stages and commits manually)"
     echo "  -q, --queue      Mark the created task as auto-queued immediately"
-    echo "  Task types: unnamed-task (default), task, plan, make-plan, manual-test, manual-commit, manual-task, agent-test"
+    echo "  Task types: unnamed-task (default), task, plan, make-plan, investigate, auto-test, auto-commit, manual-test, manual-commit, manual-task, agent-test"
     echo ""
     echo "  For make-plan, -f specifies the prompt filename (make-plan-*.md); Claude writes plan-*.md:"
     echo "    planq create -t make-plan -f make-plan-001.md 'Design a caching layer for the API'"
+    echo ""
+    echo "  For investigate, -f specifies the prompt filename (investigate-*.md); Claude writes feedback-*.md:"
+    echo "    planq create -t investigate -f investigate-perf.md 'Why is the API slow under load?'"
     echo ""
     echo "  Subtask examples:"
     echo "    planq create -p 3 'Fix the login bug found during review'   # unnamed follow-up subtask after task #3"
@@ -2557,16 +2714,16 @@ usage_mark()   {
     echo "  done/d              mark task done"
     echo "  underway/u          mark task in-progress"
     echo "  inactive/i          restore done/underway/auto-queue/awaiting-commit task to pending"
-    echo "  queue/q             mark for automatic execution by 'planq auto'"
+    echo "  queue/q/auto-queue/aq  mark for automatic execution by 'planq auto'"
     echo "  awaiting-commit/ac  mark as waiting for user to commit staged changes"
     echo "  awaiting-plan/ap    mark make-plan task as waiting for plan review"
     echo "  deferred/df         move task to the bottom of the list (skip for now)"
     echo ""
     echo "  Commit flags (modifies the +commit tag on the task line):"
-    echo "  auto-commit (+ac)   Claude commits automatically after task completes"
-    echo "  stage-commit (+sc)  Claude stages changes; task pauses for user to commit"
-    echo "  manual-commit (+mc) task pauses at awaiting-commit (user stages/commits manually)"
-    echo "  no-commit (+nc)     clear any commit flag"
+    echo "  auto-commit/+ac     Claude commits automatically after task completes"
+    echo "  stage-commit/+sc/sc Claude stages changes; task pauses for user to commit"
+    echo "  manual-commit/+mc/mc task pauses at awaiting-commit (user stages/commits manually)"
+    echo "  no-commit/+nc/nc    clear any commit flag"
 }
 usage_auto()   {
     echo "Usage: planq auto"
@@ -2590,7 +2747,7 @@ usage() {
     echo "Usage: planq.sh <subcommand> [options]"
     echo ""
     echo "Subcommands:"
-    echo "  list    / l                                     List all tasks with status"
+    echo "  list    / l [-a] [-r] [-f <filter>]              List all tasks with status"
     echo "  show    / s [-a] [N]                            Show next pending task, or task #N"
     echo "  run     / r [N] [--dry-run|-n]                 Run next pending task, or task #N"
     echo "  auto    / A                                    Run auto-queued tasks continuously"
@@ -2598,9 +2755,10 @@ usage() {
   do        / do [-t <type>] [-f <file>] [-p <parent>] [<desc>]  Create a task and immediately run it"
     echo "  follow-up / fu <parent> [opts] [<desc>]  Create follow-up subtask (-r to run, -q to queue)"
     echo "  fixup     / fx <parent> [opts] [<desc>]  Create fix-required subtask (-r to run, -q to queue)"
-    echo "  mark    / m <done|underway|inactive|queue|ac|ap|deferred|auto-commit|stage-commit|manual-commit|no-commit> <N|…>  Mark a task (also: mark:<state>)"
+    echo "  mark    / m <d|u|i|q|ac|ap|df|+ac|sc|mc|nc> <N|…>  Mark a task status or commit flag (also: mark:<state>)"
     echo "  delete  / x <N>                                Delete task #N"
     echo "  archive / a [N|…] [--unarchive|-U <N|…>]      Archive done tasks; -a flag on list/show for archive"
+    echo "  profiles  <list|active|switch|init>             Manage agent profiles (CCS/OpenCode)"
     echo "  daemon  / d [start|stop|restart|status]        Manage the planq WebSocket daemon"
     echo "  logs    / L [-c] [-f] [-n <N>]                Show daemon log (default: tail)"
     echo "  worktree-review / wr <state|notes <text>|status>  Set/show worktree-level review state"
@@ -2612,6 +2770,9 @@ usage() {
     echo "  task                       Read plans/<file> and pass its contents to claude"
     echo "  plan                       Ask claude to read and implement plans/<file>"
     echo "  make-plan                  Use a prompt file (make-plan-*.md) to create a plan file (plan-*.md)"
+    echo "  investigate                Research a question (investigate-*.md) and write findings (feedback-*.md)"
+    echo "  auto-test                  Run a shell command as an automated test"
+    echo "  auto-commit                Ask Claude to commit current changes"
     echo "  manual-(test|commit|task)  Pause for a manual step"
     echo "  agent-test                 Invoke Claude with description as a testing prompt"
     echo ""
@@ -2620,6 +2781,9 @@ usage() {
     echo "  task: <file>"
     echo "  plan: <file>"
     echo "  make-plan: <make-plan-file>  (prompt in plans/make-plan-*.md; Claude writes plans/plan-*.md)"
+    echo "  investigate: <investigate-file>  (prompt in plans/investigate-*.md; findings in plans/feedback-*.md)"
+    echo "  auto-test: <shell command>"
+    echo "  auto-commit: <options>"
     echo "  manual-test: <desc>  (or manual-commit / manual-task)"
     echo "  agent-test: <desc>"
     echo ""
@@ -2650,6 +2814,7 @@ if _has_help_flag "$@"; then
         mark|m|mark:*|m:*) usage_mark ;;
         delete|x)    usage_delete ;;
         archive|a)   usage_archive ;;
+        profiles)    cmd_profiles --help ;;
         daemon|d)    usage_daemon ;;
         *)           usage ;;
     esac
@@ -2669,6 +2834,7 @@ case "$SUBCMD" in
     mark:*|m:*)          cmd_mark "${SUBCMD#*:}" "$@" ;;
     delete|x)            cmd_delete "$@" ;;
     archive|a)           cmd_archive "$@" ;;
+    profiles)            cmd_profiles "$@" ;;
     daemon|d)            cmd_daemon "$@" ;;
     logs|L)              cmd_logs "$@" ;;
     worktree-review|wr)  shift; cmd_review "$@" ;;

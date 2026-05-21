@@ -1151,7 +1151,7 @@ def _task_key_from_line(line: str) -> str | None:
         if value.endswith(f' +{rs}'):
             value = value[:-len(f' +{rs}')]
             break
-    for flag in (' +auto-queue-plan', ' +add-after', ' +add-end',
+    for flag in (' +auto-queue-plan', ' +add-after', ' +add-end', ' +add-subtask',
                  ' +auto-commit', ' +stage-commit', ' +manual-commit'):
         if value.endswith(flag):
             value = value[:-len(flag)]
@@ -1346,6 +1346,8 @@ def _apply_add_task(payload: dict) -> None:
             value += ' +add-after'
         elif plan_disposition == 'add-end':
             value += ' +add-end'
+        elif plan_disposition == 'add-subtask':
+            value += ' +add-subtask'
         if auto_queue_plan:
             value += ' +auto-queue-plan'
     if commit_mode == 'auto':
@@ -1429,6 +1431,12 @@ def _apply_changes(ws, changes: list) -> None:
                 _apply_delete_task(task_key)
             elif ctype == 'reorder':
                 _apply_reorder(payload.get('order', []))
+            elif ctype == 'switch_profile':
+                profile = payload.get('profile', '')
+                profile_file = WORKSPACE_ROOT / '.devcontainer' / '.active-profile'
+                profile_file.parent.mkdir(parents=True, exist_ok=True)
+                profile_file.write_text(profile + '\n')
+                log.info('Switched active profile to: %s', profile)
             ack_ids.append(cid)
         except Exception as e:
             log.error('Failed to apply change %s (%s): %s', cid, ctype, e)
@@ -1503,6 +1511,52 @@ def _plans_watcher_thread():
                 _plans_watcher_debounce = t
 
 
+# ── Active profile ────────────────────────────────────────────────────────────
+
+def _read_active_profile() -> str:
+    """Read the active CCS/agent profile from .devcontainer/.active-profile."""
+    profile_file = WORKSPACE_ROOT / '.devcontainer' / '.active-profile'
+    try:
+        return profile_file.read_text().strip()
+    except (FileNotFoundError, OSError):
+        return ''
+
+
+# ── ccusage cost collection ───────────────────────────────────────────────────
+_CCUSAGE_INTERVAL = 300  # seconds between ccusage runs (5 minutes)
+_ccusage_last_run = 0.0
+_ccusage_cache: list = []
+
+def _collect_ccusage() -> list:
+    """Run ccusage daily --json and return parsed cost data.  Cached for _CCUSAGE_INTERVAL."""
+    global _ccusage_last_run, _ccusage_cache
+    now = time.time()
+    if now - _ccusage_last_run < _CCUSAGE_INTERVAL:
+        return _ccusage_cache
+    _ccusage_last_run = now
+    try:
+        result = subprocess.run(
+            ['npx', '--yes', 'ccusage@latest', 'daily', '--json'],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, 'NO_COLOR': '1'},
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            _ccusage_cache = data if isinstance(data, list) else [data]
+            log.info('ccusage: collected %d day(s) of cost data', len(_ccusage_cache))
+        else:
+            log.debug('ccusage: no output (rc=%d)', result.returncode)
+            _ccusage_cache = []
+    except FileNotFoundError:
+        log.debug('ccusage: not installed')
+        _ccusage_cache = []
+    except subprocess.TimeoutExpired:
+        log.warning('ccusage: timed out')
+    except (json.JSONDecodeError, Exception) as e:
+        log.warning('ccusage: error: %s', e)
+    return _ccusage_cache
+
+
 def _send_heartbeat(ws_app):
     git = _git_info()
     source_repo = SOURCE_REPO
@@ -1542,6 +1596,7 @@ def _send_heartbeat(ws_app):
         'machine_hostname': MACHINE_HOSTNAME,
         'container_hostname': CONTAINER_HOSTNAME,
         'workspace_host_path': WORKSPACE_HOST_PATH,
+        'active_profile': _read_active_profile(),
         'planq_order': planq,
         'planq_history': history,
         'auto_test_pending': auto_test,
@@ -1556,6 +1611,11 @@ def _send_heartbeat(ws_app):
         'plans_files_deleted': plans_files_deleted,
         **git,
     }
+
+    # Include cost data if available (collected at slower cadence than heartbeats)
+    usage_costs = _collect_ccusage()
+    if usage_costs:
+        heartbeat['usage_costs'] = usage_costs
 
     _ws_send(ws_app, heartbeat)
 

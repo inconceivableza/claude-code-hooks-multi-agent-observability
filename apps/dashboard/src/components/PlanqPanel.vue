@@ -103,7 +103,8 @@
             @click.exact="toggleReviewFilterExclusive(f.status)"
             @click.ctrl.exact="toggleReviewFilter(f.status)"
             @click.meta.exact="toggleReviewFilter(f.status)"
-            :title="`${f.label} (${f.count}) — click to filter, Ctrl/Cmd+click to multi-select`"
+            @click.alt.exact="toggleReviewFilterInverted(f.status)"
+            :title="`${f.label} (${f.count}) — click to filter, Ctrl/Cmd+click to multi-select, Alt+click to invert`"
             class="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs transition-all"
             :class="activeReviewFilters.size === 0 || activeReviewFilters.has(f.status)
               ? [f.activeClass, 'opacity-100']
@@ -301,7 +302,7 @@
       :container-id="containerId"
       :all-tasks="tasks"
       @close="showAddDialog = false"
-      @add="(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks) => addTask(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks)"
+      @add="(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks, autoQueue) => addTask(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks, autoQueue)"
     />
     <AddTaskDialog
       v-if="addingSubtaskTo"
@@ -309,7 +310,7 @@
       :all-tasks="tasks"
       :parent-task="addingSubtaskTo"
       @close="addingSubtaskTo = null"
-      @add="(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType) => addTask(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType)"
+      @add="(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks, autoQueue) => addTask(type, fn, desc, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, subtasks, autoQueue)"
     />
 
     <PlanqFileEditor
@@ -564,6 +565,15 @@ function toggleReviewFilterExclusive(status: string) {
   }
 }
 
+function toggleReviewFilterInverted(status: string) {
+  if (activeReviewFilters.has(status)) {
+    activeReviewFilters.delete(status)
+  } else {
+    activeReviewFilters.clear()
+    for (const f of REVIEW_STATUS_DEFS) { if (f.status !== status) activeReviewFilters.add(f.status) }
+  }
+}
+
 // Map from parent task ID to its child tasks (in position order)
 const taskChildren = computed(() => {
   const map = new Map<number, typeof props.tasks>()
@@ -779,9 +789,9 @@ function archiveBadgeClass(taskType: string): string {
 
 const cid = () => props.containerId
 
-async function addTask(taskType: string, filename: string | null, description: string | null, createFile = false, commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none', planDisposition?: 'manual' | 'add-after' | 'add-end', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[]) {
-  console.log(`[planq] add task type=${taskType} file=${filename ?? '—'} commit_mode=${commitMode} container=${cid()}`)
-  const created = await apiAdd(props.containerId, taskType, filename, description, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType)
+async function addTask(taskType: string, filename: string | null, description: string | null, createFile = false, commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none', planDisposition?: 'manual' | 'add-after' | 'add-end' | 'add-subtask', autoQueuePlan?: boolean, parentTaskId?: number, linkType?: 'follow-up' | 'fix-required' | 'check' | 'other', subtasks?: SubtaskEntry[], autoQueue?: boolean) {
+  console.log(`[planq] add task type=${taskType} file=${filename ?? '—'} commit_mode=${commitMode} auto_queue=${!!autoQueue} container=${cid()}`)
+  const created = await apiAdd(props.containerId, taskType, filename, description, createFile, commitMode, planDisposition, autoQueuePlan, parentTaskId, linkType, autoQueue)
   if (created && subtasks?.length) {
     for (const sub of subtasks) {
       const subFile = sub.filename.trim() || null

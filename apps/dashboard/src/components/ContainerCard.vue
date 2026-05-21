@@ -46,6 +46,7 @@
         >
           <span v-if="container.workspace_host_path">{{ container.workspace_host_path }}</span>
           <span v-if="container.container_hostname" class="text-slate-600">{{ container.container_hostname }}</span>
+          <span v-if="container.active_profile" class="text-amber-500 border border-amber-700/50 rounded px-1" :title="`Active profile: ${container.active_profile}`">{{ container.active_profile }}</span>
         </div>
 
         <!-- Row 2, Col 2: first submodule label / name / branch -->
@@ -168,6 +169,14 @@
         </template>
       </div>
 
+      <!-- Timeline button (far right) -->
+      <button
+        v-if="container.connected"
+        class="text-xs text-teal-600 hover:text-teal-400 border border-teal-800 hover:border-teal-600 rounded px-2 py-0.5 transition-colors shrink-0"
+        @click="emit('open-timeline', container.id)"
+        title="Open timeline for this container"
+      >Timeline</button>
+
       <!-- Last seen (offline) + discard/merge buttons -->
       <div v-if="!container.connected" class="flex flex-col items-end gap-1 shrink-0">
         <span class="text-xs text-slate-500">{{ relativeTime }}</span>
@@ -280,6 +289,7 @@ const emit = defineEmits<{
   'tasks-changed': []
   'open-git-view': [repo: string, hash?: string | null]
   'open-history': [containerId: string, sessionId: string]
+  'open-timeline': [containerId: string]
 }>()
 
 // ── Session hiding ────────────────────────────────────────────────────────────

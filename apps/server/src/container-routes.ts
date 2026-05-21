@@ -57,6 +57,10 @@ import {
   type PlanqItem,
   type StoredGitCommit,
   type HostSourceReport,
+  type TimelineEntry,
+  getTimelineEntries,
+  upsertUsageCosts,
+  getUsageCosts,
 } from './container-db';
 
 // ── Heartbeat change detection ────────────────────────────────────────────────
@@ -94,7 +98,8 @@ function containerDataChanged(
     existing.planq_order            !== (msg.planq_order ?? null) ||
     existing.review_state           !== (msg.review_state != null ? JSON.stringify(msg.review_state) : null) ||
     existing.test_results           !== (Array.isArray(msg.test_results) ? JSON.stringify(msg.test_results) : null) ||
-    existing.auto_test_pending      !== (msg.auto_test_pending ? JSON.stringify(msg.auto_test_pending) : null)
+    existing.auto_test_pending      !== (msg.auto_test_pending ? JSON.stringify(msg.auto_test_pending) : null) ||
+    existing.active_profile         !== (msg.active_profile ?? '')
   );
 }
 
@@ -623,6 +628,21 @@ export function broadcastAgentUpdate(data: {
         last_response_summary,
       },
     });
+
+    // Broadcast timeline entries for progress/prompt events
+    if (claimants.length > 0) {
+      let timelineEntry: TimelineEntry | null = null;
+      if (data.hook_event_type === 'Stop' && data.summary) {
+        timelineEntry = { type: 'progress', timestamp: Date.now(), session_id: data.session_id, summary: data.summary };
+      } else if (data.hook_event_type === 'UserPromptSubmit' && last_prompt) {
+        timelineEntry = { type: 'prompt', timestamp: Date.now(), session_id: data.session_id, prompt: last_prompt.slice(0, 200) };
+      }
+      if (timelineEntry) {
+        for (const c of claimants) {
+          broadcastDashboard({ type: 'timeline_entry', data: { container_id: c.id, entry: timelineEntry } });
+        }
+      }
+    }
   }
 }
 
@@ -818,6 +838,7 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
         running_session_ids: Array.isArray(msg.running_session_ids) ? msg.running_session_ids : [],
         review_state: msg.review_state != null ? JSON.stringify(msg.review_state) : null,
         test_results: Array.isArray(msg.test_results) ? JSON.stringify(msg.test_results) : null,
+        active_profile: msg.active_profile ?? '',
         last_seen: now,
       });
       console.log(`[heartbeat] ${hbCtx}: updated sessions=[${mergedSessionIds.map(s => s.slice(0,8)).join(', ')}] git: staged=${msg.git_staged_count ?? 'n/a'} unstaged=${msg.git_unstaged_count ?? 'n/a'} branch=${msg.git_branch ?? '-'}`);
@@ -937,6 +958,11 @@ export function handleContainerMessage(ws: any, raw: string | Buffer): void {
         for (const filename of msg.plans_files_deleted as string[]) cache.delete(filename);
       }
       plansFilesCacheReady.add(containerId);
+    }
+
+    // Store usage cost data from ccusage (sent by daemon every 5 minutes)
+    if (Array.isArray(msg.usage_costs) && msg.usage_costs.length > 0) {
+      upsertUsageCosts(containerId, sourceRepo, container.machine_hostname, msg.usage_costs);
     }
 
     // Broadcast to dashboard clients only when something changed
@@ -1881,6 +1907,81 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     }
   }
 
+  // GET /dashboard/timeline/:containerId?since=<ms>&sessions=<csv>
+  if (pathname.match(/^\/dashboard\/timeline\/[^/]+$/) && method === 'GET') {
+    const containerId = decodeURIComponent(pathname.split('/')[3]!);
+    const container = getContainer(containerId);
+    if (!container) return err('Container not found', 404);
+
+    const since = parseInt(url.searchParams.get('since') ?? '') || (Date.now() - 24 * 60 * 60 * 1000);
+    const sessionsParam = url.searchParams.get('sessions');
+    const sessionIds = sessionsParam ? sessionsParam.split(',').filter(Boolean) : undefined;
+
+    const entries = getTimelineEntries(containerId, container.source_repo, since, sessionIds);
+    console.log(`[timeline] container=${containerId} repo=${container.source_repo} since=${new Date(since).toISOString()} db_entries=${entries.length}`);
+
+    // Also fetch progress/prompt entries from events DB (separate database)
+    const evtSessionFilter = sessionIds?.length
+      ? `AND session_id IN (${sessionIds.map(() => '?').join(',')})`
+      : '';
+    const evtSessionParams = sessionIds?.length ? sessionIds : [];
+    const evtRows = db.prepare(`
+      SELECT session_id, hook_event_type, summary, chat, timestamp
+      FROM events
+      WHERE source_app = ? AND timestamp >= ?
+        AND hook_event_type IN ('Stop', 'UserPromptSubmit')
+        ${evtSessionFilter}
+      ORDER BY timestamp
+      LIMIT 500
+    `).all(container.source_repo, since, ...evtSessionParams) as any[];
+
+    for (const r of evtRows) {
+      if (r.hook_event_type === 'Stop' && r.summary) {
+        entries.push({ type: 'progress', timestamp: r.timestamp, session_id: r.session_id, summary: r.summary });
+      } else if (r.hook_event_type === 'UserPromptSubmit') {
+        let prompt = '';
+        try { prompt = JSON.parse(r.chat ?? r.summary ?? '{}').message ?? r.summary ?? ''; } catch { prompt = r.summary ?? ''; }
+        if (prompt) {
+          entries.push({ type: 'prompt', timestamp: r.timestamp, session_id: r.session_id, prompt: prompt.slice(0, 200) });
+        }
+      }
+    }
+
+    const byType = new Map<string, number>();
+    for (const e of entries) byType.set(e.type, (byType.get(e.type) ?? 0) + 1);
+    console.log(`[timeline] total=${entries.length} ${[...byType].map(([k,v]) => `${k}=${v}`).join(' ')} evtRows=${evtRows.length}`);
+
+    entries.sort((a, b) => a.timestamp - b.timestamp);
+    return json(entries.slice(-500));
+  }
+
+  // POST /planq/:id/switch-profile  { profile: "name" }
+  if (pathname.match(/^\/planq\/[^/]+\/switch-profile$/) && method === 'POST') {
+    const containerId = decodeURIComponent(pathname.split('/')[2]!);
+    const container = getContainer(containerId);
+    if (!container) return err('Container not found', 404);
+    const body = await req.json() as any;
+    const profile = body.profile ?? '';
+    sendApplyChanges(containerId, [{
+      id: crId(), type: 'switch_profile', source: 'dashboard', timestamp: Date.now() / 1000,
+      task_key: '', payload: { profile },
+    }]);
+    return json({ ok: true, profile });
+  }
+
+  // GET /dashboard/costs?repo=&host=&container=&from=&to=&model=
+  if (pathname === '/dashboard/costs' && method === 'GET') {
+    const costs = getUsageCosts({
+      sourceRepo: url.searchParams.get('repo') || undefined,
+      machineHostname: url.searchParams.get('host') || undefined,
+      containerId: url.searchParams.get('container') || undefined,
+      dateFrom: url.searchParams.get('from') || undefined,
+      dateTo: url.searchParams.get('to') || undefined,
+      model: url.searchParams.get('model') || undefined,
+    });
+    return json(costs);
+  }
+
   // GET /dashboard/session-log/:containerId/:sessionId?offset=<lines>&limit=<lines>
   if (pathname.match(/^\/dashboard\/session-log\/[^/]+\/[^/]+$/) && method === 'GET') {
     const parts = pathname.split('/');
@@ -2005,7 +2106,7 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     if (!container) return err('Container not found', 404);
 
     const body = await req.json() as any;
-    const { task_type, description, create_file, auto_commit, commit_mode, plan_disposition, auto_queue_plan, parent_task_id, link_type: rawLinkType } = body;
+    const { task_type, description, create_file, auto_commit, commit_mode, plan_disposition, auto_queue_plan, parent_task_id, link_type: rawLinkType, auto_queue } = body;
     const linkType = (['follow-up', 'fix-required', 'check', 'other'].includes(rawLinkType) ? rawLinkType : 'follow-up') as 'follow-up' | 'fix-required' | 'check' | 'other';
     let { filename } = body;
     if (!task_type) return err('task_type required');
@@ -2023,8 +2124,8 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     }
 
     const effectiveMode = (['auto', 'stage', 'manual'].includes(commit_mode) ? commit_mode : (auto_commit ? 'auto' : 'none')) as 'none' | 'auto' | 'stage' | 'manual';
-    const effectiveDisposition = (['add-after', 'add-end'].includes(plan_disposition) ? plan_disposition : 'manual') as 'manual' | 'add-after' | 'add-end';
-    const task = addPlanqTask(containerId, task_type, filename ?? null, description ?? null, effectiveMode === 'auto', effectiveMode, effectiveDisposition, Boolean(auto_queue_plan));
+    const effectiveDisposition = (['add-after', 'add-end', 'add-subtask'].includes(plan_disposition) ? plan_disposition : 'manual') as 'manual' | 'add-after' | 'add-end' | 'add-subtask';
+    const task = addPlanqTask(containerId, task_type, filename ?? null, description ?? null, effectiveMode === 'auto', effectiveMode, effectiveDisposition, Boolean(auto_queue_plan), auto_queue ? 'auto-queue' : 'pending');
     touchPlanqServerModified(containerId);
     // For make-plan, write the prompt to the filename directly (filename IS make-plan-*.md)
     if (task_type === 'make-plan' && filename && description) {
@@ -2120,6 +2221,23 @@ export async function handleContainerRequest(req: Request): Promise<Response | n
     sendApplyChanges(containerId, containerChanges);
 
     broadcastDashboard({ type: 'planq_update', data: { container_id: containerId, tasks: getPlanqTasks(containerId) } });
+
+    // Broadcast timeline entry for task status changes
+    if (body.status === 'underway' || body.status === 'done') {
+      const entryType = body.status === 'underway' ? 'task-start' : 'task-done';
+      const sessionId = task.session_ids?.[task.session_ids.length - 1] ?? '';
+      broadcastDashboard({
+        type: 'timeline_entry',
+        data: {
+          container_id: containerId,
+          entry: {
+            type: entryType, timestamp: Date.now(), session_id: sessionId,
+            task: { id: task.id, task_type: task.task_type, filename: task.filename, description: task.description, status: task.status },
+          } satisfies TimelineEntry,
+        },
+      });
+    }
+
     return json(task);
   }
 

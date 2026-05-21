@@ -27,14 +27,14 @@ export type ReviewStatus =
 export interface PlanqTask {
   id: number
   container_id: string
-  task_type: 'task' | 'plan' | 'make-plan' | 'investigate' | 'manual-test' | 'manual-commit' | 'manual-task' | 'unnamed-task' | 'auto-test' | 'auto-commit'
+  task_type: 'task' | 'plan' | 'make-plan' | 'investigate' | 'manual-test' | 'manual-commit' | 'manual-task' | 'unnamed-task' | 'auto-test' | 'auto-commit' | 'agent-test'
   filename: string | null
   description: string | null
   position: number
   status: 'pending' | 'done' | 'underway' | 'auto-queue' | 'awaiting-commit' | 'awaiting-plan' | 'deferred'
   auto_commit: boolean
   commit_mode: 'none' | 'auto' | 'stage' | 'manual'
-  plan_disposition: 'manual' | 'add-after' | 'add-end'
+  plan_disposition: 'manual' | 'add-after' | 'add-end' | 'add-subtask'
   auto_queue_plan: boolean
   review_status: ReviewStatus
   parent_task_id: number | null
@@ -87,6 +87,7 @@ export interface ContainerWithState {
   review_state?: string | null
   test_results?: string | null
   plans_files_list?: string[]
+  active_profile?: string
 }
 
 export interface GitCommit {
@@ -124,10 +125,21 @@ export interface GitViewData {
   submodules?: Array<{ path: string; source_repo: string }>
 }
 
+export interface TimelineEntry {
+  type: 'task-start' | 'task-done' | 'commit' | 'progress' | 'prompt'
+  timestamp: number
+  session_id: string
+  task?: { id: number; task_type: string; filename: string | null; description: string | null; status: string }
+  commit?: { hash: string; subject: string }
+  summary?: string
+  prompt?: string
+}
+
 export type DashboardMessage =
   | { type: 'initial'; data: ContainerWithState[] }
   | { type: 'container_update'; data: ContainerWithState }
   | { type: 'container_removed'; data: { id: string } }
   | { type: 'planq_update'; data: { container_id: string; tasks: PlanqTask[] } }
   | { type: 'agent_update'; data: { source_repo: string; session_id: string; status: string; last_prompt: string | null; last_response_summary: string | null } }
+  | { type: 'timeline_entry'; data: { container_id: string; entry: TimelineEntry } }
   | { type: 'git_refresh_ready'; source_repo: string }

@@ -36,6 +36,7 @@ export interface ContainerRow {
   running_session_ids: string[]; // parsed from JSON — sessions with live claude processes
   review_state: string | null;
   test_results: string | null;
+  active_profile: string;
   last_seen: number;
   connected: boolean;
 }
@@ -50,7 +51,7 @@ export interface PlanqTaskRow {
   status: string;
   auto_commit: boolean;
   commit_mode: 'none' | 'auto' | 'stage' | 'manual';
-  plan_disposition: 'manual' | 'add-after' | 'add-end';
+  plan_disposition: 'manual' | 'add-after' | 'add-end' | 'add-subtask';
   auto_queue_plan: boolean;
   review_status: string;
   parent_task_id: number | null;
@@ -200,6 +201,9 @@ export function initContainerDatabase(): void {
   if (!columns.includes('test_results')) {
     db.exec('ALTER TABLE containers ADD COLUMN test_results TEXT');
   }
+  if (!columns.includes('active_profile')) {
+    db.exec("ALTER TABLE containers ADD COLUMN active_profile TEXT DEFAULT ''");
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS host_source_reports (
@@ -327,6 +331,29 @@ export function initContainerDatabase(): void {
   if (!hostColumns.includes('devcontainer_source_hash')) {
     db.exec('ALTER TABLE host_source_reports ADD COLUMN devcontainer_source_hash TEXT');
   }
+
+  // Usage cost data from ccusage (per day, per model)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      container_id TEXT NOT NULL,
+      source_repo TEXT NOT NULL,
+      machine_hostname TEXT NOT NULL,
+      date TEXT NOT NULL,
+      model TEXT NOT NULL,
+      agent TEXT DEFAULT 'claude',
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cache_read_tokens INTEGER DEFAULT 0,
+      cache_creation_tokens INTEGER DEFAULT 0,
+      total_cost_usd REAL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(container_id, date, model)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_uc_container ON usage_costs(container_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_uc_date ON usage_costs(date)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_uc_repo ON usage_costs(source_repo)');
 }
 
 export function touchPlanqServerModified(containerId: string): void {
@@ -353,8 +380,8 @@ export function upsertContainer(data: Omit<ContainerRow, 'connected'>): Containe
       (id, source_repo, machine_hostname, container_hostname, workspace_host_path,
        git_branch, git_worktree, git_commit_hash, git_commit_message,
        git_staged_count, git_staged_diffstat, git_unstaged_count, git_unstaged_diffstat,
-       git_remote_url, git_submodules, versions, planq_order, planq_history, planq_last_synced, auto_test_pending, active_session_ids, running_session_ids, review_state, test_results, last_seen, connected)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
+       git_remote_url, git_submodules, versions, planq_order, planq_history, planq_last_synced, auto_test_pending, active_session_ids, running_session_ids, review_state, test_results, active_profile, last_seen, connected)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
     ON CONFLICT(id) DO UPDATE SET
       source_repo=excluded.source_repo,
       machine_hostname=excluded.machine_hostname,
@@ -379,6 +406,7 @@ export function upsertContainer(data: Omit<ContainerRow, 'connected'>): Containe
       running_session_ids=excluded.running_session_ids,
       review_state=COALESCE(excluded.review_state, review_state),
       test_results=excluded.test_results,
+      active_profile=excluded.active_profile,
       last_seen=excluded.last_seen,
       connected=1
   `);
@@ -408,6 +436,7 @@ export function upsertContainer(data: Omit<ContainerRow, 'connected'>): Containe
     JSON.stringify(data.running_session_ids ?? []),
     data.review_state ?? null,
     data.test_results ?? null,
+    data.active_profile ?? '',
     data.last_seen
   );
 
@@ -477,6 +506,7 @@ function rowToContainer(row: any): ContainerRow {
     running_session_ids: JSON.parse(row.running_session_ids || '[]'),
     review_state: row.review_state ?? null,
     test_results: row.test_results ?? null,
+    active_profile: row.active_profile ?? '',
     last_seen: row.last_seen,
     connected: Boolean(row.connected),
   };
@@ -549,7 +579,7 @@ export function parsePlanqOrder(text: string): PlanqItem[] {
       value = value.slice(0, -' +manual-commit'.length);
     }
 
-    if (taskType === 'task' || taskType === 'plan' || taskType === 'make-plan') {
+    if (value.endsWith('.md')) {
       items.push({ task_type: taskType, filename: value, description: null, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan, review_status, depth });
     } else {
       items.push({ task_type: taskType, filename: null, description: value, status, auto_commit, commit_mode, review_status, depth });
@@ -780,6 +810,147 @@ export function getCommitsForSession(sourceRepo: string, sessionId: string): str
   ).all(sourceRepo, sessionId) as any[]).map((r: any) => r.commit_hash);
 }
 
+export interface TimelineEntry {
+  type: 'task-start' | 'task-done' | 'commit' | 'progress' | 'prompt'
+  timestamp: number
+  session_id: string
+  task?: { id: number; task_type: string; filename: string | null; description: string | null; status: string }
+  commit?: { hash: string; subject: string }
+  summary?: string
+  prompt?: string
+}
+
+export function getTimelineEntries(containerId: string, sourceRepo: string, since: number, _sessionIds?: string[]): TimelineEntry[] {
+  const entries: TimelineEntry[] = [];
+
+  // -- Task entries --
+  // Use done_at for done tasks.  For task-start, prefer task_session_links.underway_at
+  // when available; otherwise synthesize from done_at (approximate: done - 60s).
+  const sinceSec = Math.floor(since / 1000);
+  const tasks = db.prepare(`
+    SELECT pt.id, pt.task_type, pt.filename, pt.description, pt.status, pt.done_at,
+           tsl.session_id, tsl.underway_at
+    FROM planq_tasks pt
+    LEFT JOIN task_session_links tsl ON tsl.planq_task_id = pt.id
+    WHERE pt.container_id = ?
+      AND (pt.done_at IS NOT NULL AND pt.done_at >= ?
+           OR pt.status = 'underway'
+           OR tsl.underway_at IS NOT NULL AND tsl.underway_at >= ?)
+    ORDER BY COALESCE(tsl.underway_at * 1000, pt.done_at, 0)
+  `).all(containerId, since, sinceSec) as any[];
+  const seenStart = new Set<number>();
+  const seenDone = new Set<number>();
+  for (const r of tasks) {
+    const sid = r.session_id ?? '';
+    // Task-start (only when we have a real underway_at timestamp)
+    if (r.underway_at && !seenStart.has(r.id)) {
+      seenStart.add(r.id);
+      entries.push({
+        type: 'task-start', timestamp: r.underway_at * 1000, session_id: sid,
+        task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
+      });
+    }
+    // Task-done
+    if (r.done_at && !seenDone.has(r.id)) {
+      seenDone.add(r.id);
+      entries.push({
+        type: 'task-done', timestamp: r.done_at, session_id: sid,
+        task: { id: r.id, task_type: r.task_type, filename: r.filename, description: r.description, status: r.status },
+      });
+    }
+  }
+
+  // -- Commit entries --
+  // author_date is stored in seconds (from git %at format).
+  const commitRows = db.prepare(`
+    SELECT gc.hash, gc.subject, gc.author_date,
+           csl.session_id AS link_session_id
+    FROM git_commits gc
+    LEFT JOIN commit_session_links csl
+      ON csl.source_repo = gc.source_repo AND csl.commit_hash = gc.hash
+    WHERE gc.source_repo = ? AND gc.author_date IS NOT NULL AND gc.author_date >= ?
+    ORDER BY gc.author_date
+    LIMIT 200
+  `).all(sourceRepo, sinceSec) as any[];
+  const seenCommit = new Set<string>();
+  for (const r of commitRows) {
+    if (seenCommit.has(r.hash)) continue;
+    seenCommit.add(r.hash);
+    entries.push({
+      type: 'commit', timestamp: r.author_date * 1000, session_id: r.link_session_id ?? '',
+      commit: { hash: r.hash, subject: r.subject },
+    });
+  }
+
+  entries.sort((a, b) => a.timestamp - b.timestamp);
+  return entries.slice(-500);
+}
+
+// ── Usage cost data ──────────────────────────────────────────────────────────
+
+export interface UsageCostRow {
+  id: number;
+  container_id: string;
+  source_repo: string;
+  machine_hostname: string;
+  date: string;
+  model: string;
+  agent: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  updated_at: number;
+}
+
+export function upsertUsageCosts(containerId: string, sourceRepo: string, machineHostname: string, costs: any[]): void {
+  const stmt = db.prepare(`
+    INSERT INTO usage_costs (container_id, source_repo, machine_hostname, date, model, agent,
+                             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                             total_cost_usd, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(container_id, date, model) DO UPDATE SET
+      input_tokens = excluded.input_tokens,
+      output_tokens = excluded.output_tokens,
+      cache_read_tokens = excluded.cache_read_tokens,
+      cache_creation_tokens = excluded.cache_creation_tokens,
+      total_cost_usd = excluded.total_cost_usd,
+      agent = excluded.agent,
+      updated_at = excluded.updated_at
+  `);
+  const now = Date.now();
+  for (const c of costs) {
+    if (!c.date || !c.model) continue;
+    stmt.run(
+      containerId, sourceRepo, machineHostname,
+      c.date, c.model, c.agent ?? 'claude',
+      c.input_tokens ?? c.inputTokens ?? 0,
+      c.output_tokens ?? c.outputTokens ?? 0,
+      c.cache_read_tokens ?? c.cacheReadTokens ?? 0,
+      c.cache_creation_tokens ?? c.cacheCreationTokens ?? 0,
+      c.total_cost ?? c.totalCost ?? 0,
+      now,
+    );
+  }
+}
+
+export function getUsageCosts(filters: {
+  sourceRepo?: string; machineHostname?: string; containerId?: string;
+  dateFrom?: string; dateTo?: string; model?: string;
+}): UsageCostRow[] {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (filters.sourceRepo) { conditions.push('source_repo = ?'); params.push(filters.sourceRepo); }
+  if (filters.machineHostname) { conditions.push('machine_hostname = ?'); params.push(filters.machineHostname); }
+  if (filters.containerId) { conditions.push('container_id = ?'); params.push(filters.containerId); }
+  if (filters.dateFrom) { conditions.push('date >= ?'); params.push(filters.dateFrom); }
+  if (filters.dateTo) { conditions.push('date <= ?'); params.push(filters.dateTo); }
+  if (filters.model) { conditions.push('model = ?'); params.push(filters.model); }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return db.prepare(`SELECT * FROM usage_costs ${where} ORDER BY date DESC, model`).all(...params) as UsageCostRow[];
+}
+
 export function addPlanqTask(
   containerId: string,
   taskType: string,
@@ -787,8 +958,9 @@ export function addPlanqTask(
   description: string | null,
   autoCommit = false,
   commitMode: 'none' | 'auto' | 'stage' | 'manual' = 'none',
-  planDisposition: 'manual' | 'add-after' | 'add-end' = 'manual',
-  autoQueuePlan = false
+  planDisposition: 'manual' | 'add-after' | 'add-end' | 'add-subtask' = 'manual',
+  autoQueuePlan = false,
+  initialStatus: 'pending' | 'auto-queue' = 'pending'
 ): PlanqTaskRow {
   const maxPos = (db.prepare(
     'SELECT MAX(position) as m FROM planq_tasks WHERE container_id = ?'
@@ -797,8 +969,8 @@ export function addPlanqTask(
   const effectiveMode = commitMode !== 'none' ? commitMode : (autoCommit ? 'auto' : 'none');
   const result = db.prepare(`
     INSERT INTO planq_tasks (container_id, task_type, filename, description, position, status, auto_commit, commit_mode, plan_disposition, auto_queue_plan)
-    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
-  `).run(containerId, taskType, filename ?? null, description ?? null, maxPos + 1, effectiveMode === 'auto' ? 1 : 0, effectiveMode, planDisposition, autoQueuePlan ? 1 : 0);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(containerId, taskType, filename ?? null, description ?? null, maxPos + 1, initialStatus, effectiveMode === 'auto' ? 1 : 0, effectiveMode, planDisposition, autoQueuePlan ? 1 : 0);
   const row = db.prepare('SELECT * FROM planq_tasks WHERE id = ?').get(result.lastInsertRowid) as any;
   return rowToTask(row);
 }
